@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "egui_midi",
+    "example_app",
+]
+resolver = "2"

@@ -1,0 +1,11 @@
+[package]
+name = "egui_midi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.30"
+midly = "0.5"
+crossbeam-channel = "0.5"
+log = "0.4"
+rodio = "0.20"
