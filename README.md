@@ -7,20 +7,21 @@ A modern, lightweight single-track MIDI editor library built with Rust and egui 
 This library focuses on **single-track MIDI editing** and is designed to serve as a component within larger DAW applications. The primary objectives are:
 
 - **Developer Experience**: Provide an elegant and intuitive API for easy integration
-- **Advanced Editing Tools**: Rich set of editing capabilities (quantize, humanize, etc.)
+- **Practical Workflow**: Ship the common tools (selection, quantize-to-grid, clipboard, undo/redo) needed to embed a usable piano roll
 - **Performance**: Optimized for handling large MIDI files efficiently
 - **Simplicity**: Focused on single-track editing without unnecessary complexity
 
 ## 🎵 Features
 
-- **Visual MIDI Editor**: Intuitive piano roll interface for editing single-track MIDI notes
-- **Real-time Audio Playback**: Built-in audio engine with ADSR envelope synthesis for preview
+- **Visual MIDI Editor**: Intuitive piano roll interface for editing *one track at a time*
+- **Inspector & Clipboard**: Multi-select, copy/cut/paste, per-note editing, and quantize-to-snap grid actions
+- **Undo / Redo Stack**: History snapshots for every editing action, plus keyboard shortcuts
+- **Real-time Audio Playback**: Built-in audio engine with ADSR synthesis, pitch-shift preview, and pluggable backends
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Modular Architecture**: Clean separation between UI, audio, and MIDI processing
-- **Professional Editing**: Note editing, selection, undo/redo, copy/paste
-- **Transport Controls**: Play, pause, loop functionality with BPM control
-- **MIDI Import/Export**: Load and save MIDI files using the midly library
-- **Developer-Friendly API**: Designed for easy integration into existing DAW projects
+- **Transport Controls**: Play/Pause/Stop with BPM control (loop regions planned)
+- **Strict Single-Track I/O**: Helpers for validating/serializing single-track SMF payloads using midly
+- **Developer-Friendly API**: Event/command bus, strict validation helpers, playback observers, and customizable options
 
 ## 🏗️ Architecture
 
@@ -52,6 +53,8 @@ cargo build --release
 
 # Run the example application
 cargo run --release -p example_app
+
+# Note: the demo opens/saves `.aquamidi` single-track projects and can export standard `.mid` files.
 ```
 
 ## 🎹 Usage
@@ -62,8 +65,9 @@ The library is designed to be easily integrated into your DAW application:
 
 ```rust
 use egui_midi::MidiEditor;
-use egui_midi::audio::{AudioEngine, PlaybackBackend};
-use egui_midi::structure::Note;
+use egui_midi::audio::{AudioEngine, PlaybackBackend, PlaybackObserver};
+use egui_midi::editor::{EditorCommand, EditorEvent};
+use egui_midi::structure::{MidiState, Note};
 use std::sync::Arc;
 
 // Create audio engine (optional - can be None if you handle audio externally)
@@ -75,8 +79,55 @@ let mut editor = MidiEditor::new(Some(audio));
 // Add notes to the single track
 editor.insert_note(Note::new(0, 480, 60, 100)); // C4 quarter note
 
+// Observe editor events (state diffs, playback, selection, etc.)
+editor.set_event_listener(|event| match event {
+    EditorEvent::StateReplaced(state) => {
+        // Persist or display the new MidiState
+        log::info!("state now contains {} notes", state.notes.len());
+    }
+    EditorEvent::PlaybackStateChanged { is_playing } => {
+        log::info!("transport {}", if is_playing { "started" } else { "stopped" });
+    }
+    _ => {}
+});
+
+// Optional: hook start/stop notifications independent of MIDI events
+struct TransportHook;
+impl PlaybackObserver for TransportHook {
+    fn on_playback_started(&self) {
+        log::info!("audio preview engaged");
+    }
+    fn on_playback_stopped(&self) {
+        log::info!("audio preview halted");
+    }
+}
+editor.set_playback_observer(Some(Arc::new(TransportHook)));
+
+// Drive editor actions from your host logic
+editor.apply_command(EditorCommand::SeekSeconds(4.0));
+editor.apply_command(EditorCommand::SetPlayback(true));
+
 // Render the editor in your egui UI
 editor.ui(ui);
+```
+
+### Example App File Menu
+
+The bundled `example_app` includes a File menu (New/Open/Save/Save As/Export MIDI) that operates on a custom single-track project format with the `.aquamidi` extension. `.aquamidi` files wrap a validated single-track SMF payload plus a lightweight header, ensuring demos stay aligned with the library’s “one track per editor” constraint. Use Export MIDI to write a standard `.mid` file that any DAW can open; importing `.mid` directly in the demo is not supported yet, so convert via your host application if needed.
+
+### Strict Single-Track MIDI I/O
+
+```rust
+use egui_midi::structure::{MidiState, MidiValidationError};
+
+// Import with validation (enforces single track + single channel)
+let smf = midly::Smf::parse(bytes)?;
+let state = MidiState::from_smf_strict(&smf)?;
+
+// Mutate editor state...
+
+// Export with the same guarantees
+let smf = editor.state.to_single_track_smf()?;
 ```
 
 ### Custom Audio Backend
@@ -106,14 +157,27 @@ impl PlaybackBackend for DawAudioBackend {
     fn set_volume(&self, volume: f32) {
         // Set volume in your DAW
     }
+
+    fn set_pitch_shift(&self, semitones: f32) {
+        // Optional: adapt preview detune / resample rate
+    }
 }
 ```
 
 ### Integration Best Practices
 
 - **Single Track Focus**: This library handles one MIDI track at a time. For multi-track DAWs, create multiple `MidiEditor` instances
-- **Audio Backend**: Use `None` if your DAW already handles audio, or implement `PlaybackBackend` to integrate with your audio system
+- **Audio Backend**: Use `None` if your DAW already handles audio, or implement `PlaybackBackend` + (optionally) `PlaybackObserver` to integrate with your audio system
 - **State Management**: The editor maintains its own state, making it easy to embed in larger applications
+- **Events & Commands**: Subscribe via `set_event_listener` to react to user edits, and use `apply_command` to drive transport/selection from your host
+- **Embedding Checklist**: See [docs/embedding.md](docs/embedding.md) for a step-by-step guide
+
+## ⚠️ Current Limitations
+
+- Strictly single-track & single-channel: validation rejects multi-track or mixed-channel SMFs
+- Loop configuration fields exist but playback looping UI/logic is still experimental
+- Example app can only open/save `.aquamidi` projects (use Export MIDI for `.mid`)
+- Advanced editing features such as humanize, velocity curves, lasso selection, automation, etc. are planned but not implemented
 
 ## 🛠️ Development
 
@@ -161,25 +225,24 @@ We welcome contributions that improve:
 
 ## 📋 Roadmap
 
-### High Priority (Developer Experience & Core Features)
-- [x] Basic single-track MIDI editing
-- [x] MIDI file import/export
-- [ ] **Advanced editing tools**: Quantize, humanize, velocity editing
-- [ ] **Performance optimizations**: Efficient rendering for large MIDI files
-- [ ] **Better API ergonomics**: More intuitive methods for common operations
-- [ ] **Comprehensive documentation**: API docs with integration examples
+### Delivered
+- [x] Single-track piano roll with inspector, clipboard, quantize, undo/redo
+- [x] Strict SMF validation helpers + `.aquamidi` project format + `.mid` export
+- [x] Real-time preview synth with volume/pitch controls
+- [x] Event/command bridge for embedding in host applications
 
-### Medium Priority (Enhanced Editing)
-- [ ] Chord detection and editing
-- [ ] Scale constraints and snap-to-scale
-- [ ] Note velocity curves and automation
-- [ ] Advanced selection tools (lasso, time range, etc.)
-- [ ] Batch operations on selected notes
+### Next Up
+- [ ] Loop playback UX plus improved transport feedback
+- [ ] Advanced editing tools: humanize, velocity editing, batch transforms
+- [ ] Performance optimizations for dense arrangements
+- [ ] Better API ergonomics + comprehensive documentation/examples
+- [ ] Demo support for importing `.mid` files directly
 
 ### Future Considerations
+- [ ] Chord/scale aware editing helpers
 - [ ] Customizable UI themes
-- [ ] Plugin architecture for custom editing tools
-- [ ] Export to various MIDI formats
+- [ ] Plugin-style extension points for bespoke tooling
+- [ ] Broader export options beyond SMF single-track
 
 **Note**: This project focuses on single-track editing. Multi-track editing, VST support, MIDI device I/O, and sample-based synthesis are **not** planned features, as they are better handled by the host DAW application.
 

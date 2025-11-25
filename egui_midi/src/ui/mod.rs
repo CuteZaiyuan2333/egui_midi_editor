@@ -1,4 +1,5 @@
-use crate::audio::PlaybackBackend;
+use crate::audio::{PlaybackBackend, PlaybackObserver};
+use crate::editor::{EditorCommand, EditorEvent, MidiEditorOptions, SnapMode, TransportState};
 use crate::structure::{MidiState, Note, NoteId};
 use egui::*;
 use midly::Smf;
@@ -16,51 +17,24 @@ pub enum DragAction {
     Create,
 }
 
-#[derive(Clone, Debug)]
-pub enum EditorEvent {
-    NoteAdded(Note),
-    NoteUpdated { before: Note, after: Note },
-    NoteDeleted(Note),
-    SelectionChanged(Vec<NoteId>),
-    StateReplaced(MidiState),
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TransportState {
-    pub is_playing: bool,
-    pub position_seconds: f32,
-    pub bpm_override: Option<f32>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SnapMode {
-    Absolute,
-    Relative,
-}
-
-impl Default for SnapMode {
-    fn default() -> Self {
-        SnapMode::Absolute
-    }
-}
-
 pub struct MidiEditor {
     pub state: MidiState,
     pub playback: Option<PlaybackHandle>,
-    
+    pub playback_observer: Option<Arc<dyn PlaybackObserver>>,
+
     // View state
     pub scroll: Vec2,
     pub zoom_x: f32,
     pub zoom_y: f32,
     pub manual_scroll_x: f32, // Manual scroll offset
     pub manual_scroll_y: f32,
-    
+
     // Playback state
     pub is_playing: bool,
     pub current_time: f32, // in seconds
     pub last_update: f64,
     pub last_tick: u64, // For sequencer tracking
-    
+
     // Interaction state
     pub selected_notes: BTreeSet<NoteId>,
     pub selection_box_start: Option<Pos2>,
@@ -80,12 +54,13 @@ pub struct MidiEditor {
     pub drag_pointer_offset_ticks: Option<i64>,
     pub drag_original_notes: Vec<(NoteId, Note)>,
     pub drag_primary_anchor: Option<NoteId>,
-    
+
     // Config
     pub snap_interval: u64, // Ticks (e.g., 480 for quarter note)
     pub snap_mode: SnapMode,
     pub swing_ratio: f32,
     pub volume: f32,
+    pub preview_pitch_shift: f32,
     pub loop_enabled: bool,
     pub loop_start_tick: u64,
     pub loop_end_tick: u64,
@@ -93,6 +68,7 @@ pub struct MidiEditor {
     // Integration
     pub transport_override: Option<TransportState>,
     pub pending_events: Vec<EditorEvent>,
+    event_listener: Option<Box<dyn FnMut(&EditorEvent)>>,
     pub clipboard: Vec<Note>,
     pub undo_stack: Vec<MidiState>,
     pub redo_stack: Vec<MidiState>,
@@ -101,14 +77,31 @@ pub struct MidiEditor {
 
 impl MidiEditor {
     pub fn new(playback: Option<PlaybackHandle>) -> Self {
-        Self::with_state(MidiState::default(), playback)
+        Self::with_state_and_options(MidiState::default(), playback, MidiEditorOptions::default())
     }
 
     pub fn with_state(state: MidiState, playback: Option<PlaybackHandle>) -> Self {
-        let loop_default = (state.ticks_per_beat as u64).saturating_mul(4).max(state.ticks_per_beat as u64);
+        Self::with_state_and_options(state, playback, MidiEditorOptions::default())
+    }
+
+    pub fn with_state_and_options(
+        state: MidiState,
+        playback: Option<PlaybackHandle>,
+        options: MidiEditorOptions,
+    ) -> Self {
+        let mut editor = Self::base_with_state(state, playback);
+        editor.apply_options(&options);
+        editor
+    }
+
+    fn base_with_state(state: MidiState, playback: Option<PlaybackHandle>) -> Self {
+        let loop_default = (state.ticks_per_beat as u64)
+            .saturating_mul(4)
+            .max(state.ticks_per_beat as u64);
         Self {
             state,
             playback,
+            playback_observer: None,
             scroll: Vec2::ZERO,
             zoom_x: 100.0,
             zoom_y: 20.0,
@@ -140,11 +133,13 @@ impl MidiEditor {
             snap_mode: SnapMode::Absolute,
             swing_ratio: 0.0,
             volume: 0.5,
+            preview_pitch_shift: 0.0,
             loop_enabled: false,
             loop_start_tick: 0,
             loop_end_tick: loop_default,
             transport_override: None,
             pending_events: Vec::new(),
+            event_listener: None,
             clipboard: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -152,10 +147,39 @@ impl MidiEditor {
         }
     }
 
+    pub fn apply_options(&mut self, options: &MidiEditorOptions) {
+        self.zoom_x = options.zoom_x;
+        self.zoom_y = options.zoom_y;
+        self.manual_scroll_x = options.manual_scroll_x;
+        self.manual_scroll_y = options.manual_scroll_y;
+        self.snap_interval = options.snap_interval.max(1);
+        self.snap_mode = options.snap_mode;
+        self.swing_ratio = options.swing_ratio.clamp(0.0, 0.75);
+        self.volume = options.volume.clamp(0.0, 1.0);
+        self.preview_pitch_shift = options.preview_pitch_shift.clamp(-24.0, 24.0);
+        self.loop_enabled = options.loop_enabled;
+        self.loop_start_tick = options.loop_start_tick;
+        self.loop_end_tick = options.loop_end_tick.max(self.loop_start_tick + 1);
+        if let Some(playback) = &self.playback {
+            playback.set_volume(self.volume * 2.0);
+            playback.set_pitch_shift(self.preview_pitch_shift);
+        }
+        if let Some(key) = options.center_on_key {
+            self.center_on_key(key);
+        }
+    }
+
+    pub fn set_event_listener<F>(&mut self, listener: F)
+    where
+        F: FnMut(&EditorEvent) + 'static,
+    {
+        self.event_listener = Some(Box::new(listener));
+    }
+
     pub fn replace_state(&mut self, state: MidiState) {
         self.state = state;
         self.selected_notes.clear();
-        self.pending_events.push(EditorEvent::StateReplaced(self.state.clone()));
+        self.emit_state_replaced();
         self.undo_stack.clear();
         self.redo_stack.clear();
     }
@@ -171,8 +195,7 @@ impl MidiEditor {
     pub fn edit_state<F: FnOnce(&mut MidiState)>(&mut self, f: F) {
         self.push_undo_snapshot();
         f(&mut self.state);
-        self.pending_events
-            .push(EditorEvent::StateReplaced(self.state.clone()));
+        self.emit_state_replaced();
     }
 
     pub fn set_bpm(&mut self, bpm: f32) {
@@ -267,8 +290,7 @@ impl MidiEditor {
         if let Some(previous) = self.undo_stack.pop() {
             self.redo_stack.push(self.state.clone());
             self.state = previous;
-            self.pending_events
-                .push(EditorEvent::StateReplaced(self.state.clone()));
+            self.emit_state_replaced();
             self.selected_notes.clear();
             return true;
         }
@@ -279,8 +301,7 @@ impl MidiEditor {
         if let Some(next) = self.redo_stack.pop() {
             self.undo_stack.push(self.state.clone());
             self.state = next;
-            self.pending_events
-                .push(EditorEvent::StateReplaced(self.state.clone()));
+            self.emit_state_replaced();
             self.selected_notes.clear();
             return true;
         }
@@ -289,6 +310,14 @@ impl MidiEditor {
 
     pub fn set_playback_backend(&mut self, backend: Option<PlaybackHandle>) {
         self.playback = backend;
+        if let Some(playback) = &self.playback {
+            playback.set_volume(self.volume * 2.0);
+            playback.set_pitch_shift(self.preview_pitch_shift);
+        }
+    }
+
+    pub fn set_playback_observer(&mut self, observer: Option<Arc<dyn PlaybackObserver>>) {
+        self.playback_observer = observer;
     }
 
     pub fn take_events(&mut self) -> Vec<EditorEvent> {
@@ -300,16 +329,111 @@ impl MidiEditor {
     }
 
     pub fn center_on_c4(&mut self) {
-        // C4 is MIDI 60. 
-        // Y is calculated as (127 - note) * zoom_y.
-        // We want C4 to be in middle of viewport if possible.
-        // We don't have viewport size here easily without UI context.
-        // But we can set a default approximate scroll.
-        // Default viewport height might be around 600px?
-        // 127 - 60 = 67 keys from top. 
-        // 67 * 20 = 1340px from top.
-        // If we want 1340px to be in middle, we need to scroll down ~1000px?
-        self.manual_scroll_y = -1000.0; 
+        self.center_on_key(60);
+    }
+
+    pub fn center_on_key(&mut self, key: u8) {
+        let key = key.min(127);
+        let position_from_top = (127 - key) as f32 * self.zoom_y;
+        let approximate_view_half = 300.0;
+        let desired_offset = position_from_top - approximate_view_half;
+        self.manual_scroll_y = -desired_offset.max(0.0);
+    }
+
+    fn seek_to_seconds(&mut self, seconds: f32) {
+        let seconds = seconds.max(0.0);
+        self.current_time = seconds;
+        if self.state.ticks_per_beat > 0 {
+            let seconds_per_beat = 60.0 / self.state.bpm.max(1.0);
+            let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
+            self.last_tick = (self.current_time / seconds_per_tick) as u64;
+        } else {
+            self.last_tick = 0;
+        }
+        self.emit_transport_event();
+    }
+
+    fn stop_playback_backend(&mut self) {
+        if let Some(playback) = &self.playback {
+            playback.all_notes_off();
+        }
+    }
+
+    fn emit_event(&mut self, event: EditorEvent) {
+        if let Some(listener) = &mut self.event_listener {
+            listener(&event);
+        }
+        self.pending_events.push(event);
+    }
+
+    fn emit_state_replaced(&mut self) {
+        self.emit_event(EditorEvent::StateReplaced(self.state.clone()));
+    }
+
+    fn emit_transport_event(&mut self) {
+        self.emit_event(EditorEvent::TransportChanged {
+            current_time: self.current_time,
+            current_tick: self.last_tick,
+        });
+    }
+
+    pub fn apply_command(&mut self, command: EditorCommand) {
+        match command {
+            EditorCommand::ReplaceState(state) => self.replace_state(state),
+            EditorCommand::SetNotes(notes) => {
+                self.edit_state(|state| {
+                    state.notes = notes;
+                    state.notes.sort_by_key(|n| n.start);
+                });
+            }
+            EditorCommand::AppendNotes(mut notes) => {
+                if notes.is_empty() {
+                    return;
+                }
+                self.edit_state(|state| {
+                    state.notes.append(&mut notes);
+                    state.notes.sort_by_key(|n| n.start);
+                });
+            }
+            EditorCommand::ClearNotes => self.clear(),
+            EditorCommand::SeekSeconds(seconds) => {
+                self.seek_to_seconds(seconds);
+            }
+            EditorCommand::SetPlayback(is_playing) => {
+                if self.is_playing != is_playing {
+                    self.is_playing = is_playing;
+                    if !self.is_playing {
+                        self.stop_playback_backend();
+                        self.notify_playback_stopped();
+                    } else {
+                        self.notify_playback_started();
+                    }
+                    self.emit_event(EditorEvent::PlaybackStateChanged {
+                        is_playing: self.is_playing,
+                    });
+                }
+            }
+            EditorCommand::CenterOnKey(key) => self.center_on_key(key),
+            EditorCommand::SetBpm(bpm) => self.set_bpm(bpm),
+            EditorCommand::SetTimeSignature(numer, denom) => self.set_time_signature(numer, denom),
+            EditorCommand::SetVolume(volume) => self.set_volume(volume),
+            EditorCommand::SetLoop {
+                enabled,
+                start_tick,
+                end_tick,
+            } => {
+                self.loop_enabled = enabled;
+                self.loop_start_tick = start_tick;
+                self.loop_end_tick = end_tick.max(start_tick + 1);
+            }
+            EditorCommand::SetSnap { interval, mode } => {
+                self.snap_interval = interval.max(1);
+                self.snap_mode = mode;
+            }
+            EditorCommand::OverrideTransport(state) => {
+                self.set_transport_state(state);
+            }
+        }
     }
 
     fn preview_note_on(&mut self, key: u8, velocity: u8) {
@@ -331,17 +455,16 @@ impl MidiEditor {
     }
 
     fn emit_note_added(&mut self, note: Note) {
-        self.pending_events.push(EditorEvent::NoteAdded(note));
+        self.emit_event(EditorEvent::NoteAdded(note));
     }
 
     fn emit_note_deleted(&mut self, note: Note) {
-        self.pending_events.push(EditorEvent::NoteDeleted(note));
+        self.emit_event(EditorEvent::NoteDeleted(note));
     }
 
     fn emit_note_updated(&mut self, before: Note, after: Note) {
         if before != after {
-            self.pending_events
-                .push(EditorEvent::NoteUpdated { before, after });
+            self.emit_event(EditorEvent::NoteUpdated { before, after });
         }
     }
 
@@ -362,7 +485,7 @@ impl MidiEditor {
 
     fn notify_selection_changed(&mut self, previous: BTreeSet<NoteId>) {
         if previous != self.selected_notes {
-            self.pending_events.push(EditorEvent::SelectionChanged(
+            self.emit_event(EditorEvent::SelectionChanged(
                 self.selected_notes.iter().copied().collect(),
             ));
         }
@@ -393,12 +516,21 @@ impl MidiEditor {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
-        ui.vertical(|ui| {
-            self.ui_toolbar(ui);
+        let total_height = ui.available_height();
+        ui.set_min_height(total_height);
+
+        ui.horizontal(|ui| {
+            ui.set_min_height(total_height);
+            ui.vertical(|ui| {
+                ui.set_min_height(total_height);
+                self.ui_toolbar(ui);
+                ui.separator();
+                self.ui_piano_roll(ui);
+            });
             ui.separator();
-            self.ui_piano_roll(ui);
+            self.ui_inspector(ui, total_height);
         });
-        
+
         // Handle playback logic
         if ui.input(|i| i.key_pressed(Key::Space)) {
             self.is_playing = !self.is_playing;
@@ -407,9 +539,14 @@ impl MidiEditor {
                 let seconds_per_beat = 60.0 / self.state.bpm;
                 let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
                 self.last_tick = (self.current_time / seconds_per_tick) as u64;
-            } else if let Some(playback) = &self.playback {
-                playback.all_notes_off();
+                self.notify_playback_started();
+            } else {
+                self.stop_playback_backend();
+                self.notify_playback_stopped();
             }
+            self.emit_event(EditorEvent::PlaybackStateChanged {
+                is_playing: self.is_playing,
+            });
         }
 
         if self.is_playing {
@@ -417,8 +554,9 @@ impl MidiEditor {
             let now = ui.input(|i| i.time);
             let dt = now - self.last_update;
             self.last_update = now;
-            
-            if dt > 0.0 && dt < 1.0 { // Avoid large jumps
+
+            if dt > 0.0 && dt < 1.0 {
+                // Avoid large jumps
                 self.current_time += dt as f32;
                 self.update_sequencer();
             }
@@ -427,23 +565,27 @@ impl MidiEditor {
             // Update last_tick to match current_time so when we start playing we don't skip or retrigger weirdly
             // But if we scrub, we might want to silence notes.
         }
+
+        self.handle_shortcuts(ui.ctx());
     }
 
     fn update_sequencer(&mut self) {
-        if self.state.ticks_per_beat == 0 || self.state.bpm <= 0.0 { return; }
+        if self.state.ticks_per_beat == 0 || self.state.bpm <= 0.0 {
+            return;
+        }
 
         let seconds_per_beat = 60.0 / self.state.bpm;
         let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
-        
+
         let current_tick = (self.current_time / seconds_per_tick) as u64;
-        
+
         if let Some(playback) = &self.playback {
             for note in &self.state.notes {
                 // Check for Note On: start lies between last_tick (exclusive) and current_tick (inclusive)
                 // Note: We use > last_tick to ensure we don't retrigger if we paused exactly on start.
                 // But for FIRST note starting at 0, last_tick might be 0.
                 // So special case: if last_tick is 0, include 0.
-                
+
                 let should_trigger_start = if self.last_tick == 0 {
                     note.start >= self.last_tick && note.start <= current_tick
                 } else {
@@ -453,7 +595,7 @@ impl MidiEditor {
                 if should_trigger_start {
                     playback.note_on(note.key, note.velocity);
                 }
-                
+
                 // Check for Note Off: end lies between last_tick and current_tick
                 let end = note.start + note.duration;
                 if end > self.last_tick && end <= current_tick {
@@ -461,58 +603,216 @@ impl MidiEditor {
                 }
             }
         }
-        
+
         self.last_tick = current_tick;
+        self.emit_transport_event();
+    }
+
+    fn ui_inspector(&mut self, ui: &mut Ui, min_height: f32) {
+        ui.set_min_width(240.0);
+        ui.set_min_height(min_height);
+        ui.vertical(|ui| {
+            ui.heading("Inspector");
+            ui.separator();
+            let selection_len = self.selected_notes.len();
+            ui.label(format!("Selected notes: {selection_len}"));
+            ui.add_space(4.0);
+            if selection_len == 0 {
+                if ui
+                    .add_enabled(!self.clipboard.is_empty(), Button::new("Paste at playhead"))
+                    .clicked()
+                {
+                    let tick = self.current_tick_position();
+                    self.paste_clipboard_at(tick);
+                }
+                ui.label("Tip: Hold Shift to box-select inside the piano roll.");
+                return;
+            }
+
+            ui.horizontal(|ui| {
+                if ui.button("Copy").clicked() {
+                    self.copy_selection();
+                }
+                if ui.button("Cut").clicked() {
+                    self.cut_selection();
+                }
+                if ui
+                    .add_enabled(!self.clipboard.is_empty(), Button::new("Paste"))
+                    .clicked()
+                {
+                    let tick = self.current_tick_position();
+                    self.paste_clipboard_at(tick);
+                }
+                if ui.button("Delete").clicked() {
+                    self.delete_selected_notes();
+                }
+            });
+
+            if ui
+                .add_enabled(self.snap_interval > 0, Button::new("Quantize to snap grid"))
+                .clicked()
+            {
+                self.quantize_selected_notes();
+            }
+
+            if selection_len == 1 {
+                if let Some(note) = self.first_selected_note() {
+                    self.draw_single_note_inspector(ui, note);
+                }
+            } else {
+                self.draw_multi_note_summary(ui);
+            }
+        });
+    }
+
+    fn draw_single_note_inspector(&mut self, ui: &mut Ui, note: Note) {
+        ui.separator();
+        ui.label("Single note properties");
+        let note_id = note.id;
+
+        let mut start = note.start as i64;
+        ui.horizontal(|ui| {
+            ui.label("Start");
+            if ui
+                .add(DragValue::new(&mut start).speed(self.snap_interval.max(1) as f64))
+                .changed()
+            {
+                let start = start.max(0) as u64;
+                self.edit_note_by_id(note_id, |n| n.start = start);
+            }
+        });
+
+        let mut duration = note.duration as i64;
+        ui.horizontal(|ui| {
+            ui.label("Duration");
+            if ui
+                .add(DragValue::new(&mut duration).speed(self.snap_interval.max(1) as f64))
+                .changed()
+            {
+                let duration = duration.max(1) as u64;
+                self.edit_note_by_id(note_id, |n| n.duration = duration);
+            }
+        });
+
+        let mut key = note.key as i32;
+        if ui
+            .add(Slider::new(&mut key, 0..=127).text("Pitch"))
+            .changed()
+        {
+            let key = key as u8;
+            self.edit_note_by_id(note_id, |n| n.key = key);
+        }
+
+        let mut velocity = note.velocity as i32;
+        if ui
+            .add(Slider::new(&mut velocity, 1..=127).text("Velocity"))
+            .changed()
+        {
+            let velocity = velocity as u8;
+            self.edit_note_by_id(note_id, |n| n.velocity = velocity);
+        }
+    }
+
+    fn draw_multi_note_summary(&self, ui: &mut Ui) {
+        let snapshot = self.selected_notes_snapshot();
+        if snapshot.is_empty() {
+            return;
+        }
+        let min_start = snapshot.iter().map(|n| n.start).min().unwrap_or(0);
+        let max_start = snapshot.iter().map(|n| n.start).max().unwrap_or(0);
+        let min_duration = snapshot.iter().map(|n| n.duration).min().unwrap_or(0);
+        let max_duration = snapshot.iter().map(|n| n.duration).max().unwrap_or(0);
+        let avg_velocity =
+            snapshot.iter().map(|n| n.velocity as u32).sum::<u32>() / snapshot.len() as u32;
+
+        ui.separator();
+        ui.label("Multi-note summary");
+        ui.label(format!("Start range: {min_start} - {max_start}"));
+        ui.label(format!("Duration range: {min_duration} - {max_duration}"));
+        ui.label(format!("Average velocity: {avg_velocity}"));
     }
 
     fn ui_toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            if ui.button(if self.is_playing { "⏸ Pause" } else { "▶ Play" }).clicked() {
+            if ui
+                .button(if self.is_playing {
+                    "⏸ Pause"
+                } else {
+                    "▶ Play"
+                })
+                .clicked()
+            {
                 self.is_playing = !self.is_playing;
                 if self.is_playing {
                     self.last_update = ui.input(|i| i.time);
                     // Reset last_tick to avoid mass triggering if we jumped
                     let seconds_per_beat = 60.0 / self.state.bpm;
                     let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
-                    // If we are at 0, set last_tick to 0 to include start notes. 
+                    // If we are at 0, set last_tick to 0 to include start notes.
                     // If we are later, set to just before current to avoid retriggering current tick notes?
                     // Let's just set it exact.
                     self.last_tick = (self.current_time / seconds_per_tick) as u64;
                     // If we just started from 0, last_tick is 0. Our logic in update_sequencer handles 0 specially?
-                    // No, logic says if last_tick == 0, include 0. 
+                    // No, logic says if last_tick == 0, include 0.
                     // So if we seek to 0 and play, it works.
                     // If we pause at 0 and play, it re-triggers. That's probably fine.
-                } else if let Some(playback) = &self.playback {
-                    playback.all_notes_off();
+                } else {
+                    self.stop_playback_backend();
+                }
+                self.emit_event(EditorEvent::PlaybackStateChanged {
+                    is_playing: self.is_playing,
+                });
+                if self.is_playing {
+                    self.notify_playback_started();
+                } else {
+                    self.notify_playback_stopped();
                 }
             }
             if ui.button("⏹ Stop").clicked() {
                 self.is_playing = false;
                 self.current_time = 0.0;
                 self.last_tick = 0;
-                if let Some(playback) = &self.playback {
-                    playback.all_notes_off();
-                }
+                self.stop_playback_backend();
+                self.notify_playback_stopped();
+                self.emit_event(EditorEvent::PlaybackStateChanged { is_playing: false });
+                self.emit_transport_event();
             }
-            
+
             ui.separator();
-            
+
+            if ui
+                .add_enabled(!self.undo_stack.is_empty(), Button::new("↺ Undo"))
+                .clicked()
+            {
+                self.undo();
+            }
+            if ui
+                .add_enabled(!self.redo_stack.is_empty(), Button::new("↻ Redo"))
+                .clicked()
+            {
+                self.redo();
+            }
+
+            ui.separator();
+
             ui.label("Sig:");
             ui.horizontal(|ui| {
                 let mut numer = self.state.time_signature.0;
                 let mut denom = self.state.time_signature.1;
-                let numer_changed =
-                    ui.add(DragValue::new(&mut numer).speed(0.1).range(1..=32)).changed();
+                let numer_changed = ui
+                    .add(DragValue::new(&mut numer).speed(0.1).range(1..=32))
+                    .changed();
                 ui.label("/");
-                let denom_changed =
-                    ui.add(DragValue::new(&mut denom).speed(0.1).range(1..=32)).changed();
+                let denom_changed = ui
+                    .add(DragValue::new(&mut denom).speed(0.1).range(1..=32))
+                    .changed();
                 if numer_changed || denom_changed {
                     self.set_time_signature(numer, denom);
                 }
             });
 
             ui.separator();
-            
+
             ui.label("BPM:");
             let mut bpm = self.state.bpm;
             if ui
@@ -521,13 +821,13 @@ impl MidiEditor {
             {
                 self.set_bpm(bpm);
             }
-            
+
             ui.separator();
-            
+
             ui.label("Snap:");
             let mut snap = self.snap_interval;
             let snap_label = if snap == 0 {
-                "自由".to_owned()
+                "Free".to_owned()
             } else {
                 format!("1/{}", (480 * 4 / snap).max(1))
             };
@@ -543,22 +843,22 @@ impl MidiEditor {
             if snap != self.snap_interval {
                 self.set_snap_interval(snap);
             }
-            ui.small("ALT 关闭吸附");
+            ui.small("Hold ALT to disable snapping");
 
             ui.separator();
-            ui.label("Snap模式:");
+            ui.label("Snap mode:");
             ComboBox::from_id_salt("snap_mode")
                 .selected_text(match self.snap_mode {
-                    SnapMode::Absolute => "绝对",
-                    SnapMode::Relative => "相对",
+                    SnapMode::Absolute => "Absolute",
+                    SnapMode::Relative => "Relative",
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.snap_mode, SnapMode::Absolute, "绝对");
-                    ui.selectable_value(&mut self.snap_mode, SnapMode::Relative, "相对");
+                    ui.selectable_value(&mut self.snap_mode, SnapMode::Absolute, "Absolute");
+                    ui.selectable_value(&mut self.snap_mode, SnapMode::Relative, "Relative");
                 });
-                
+
             ui.separator();
-            ui.label("Vol:");
+            ui.label("Volume:");
             let mut volume = self.volume;
             if ui
                 .add(
@@ -574,11 +874,16 @@ impl MidiEditor {
             }
 
             ui.separator();
-            if ui.button("⎌ Undo").clicked() {
-                self.undo();
-            }
-            if ui.button("↻ Redo").clicked() {
-                self.redo();
+            ui.label("Pitch:");
+            let mut pitch = self.preview_pitch_shift;
+            if ui
+                .add(Slider::new(&mut pitch, -12.0..=12.0).text("± semitone"))
+                .changed()
+            {
+                self.preview_pitch_shift = pitch;
+                if let Some(playback) = &self.playback {
+                    playback.set_pitch_shift(pitch);
+                }
             }
         });
     }
@@ -586,7 +891,7 @@ impl MidiEditor {
     fn ui_piano_roll(&mut self, ui: &mut Ui) {
         let key_width = 60.0;
         let timeline_height = 30.0;
-        
+
         // Piano Roll ScrollArea
         // We disable built-in scrolling since we handle it manually via middle mouse
         ScrollArea::both()
@@ -594,38 +899,43 @@ impl MidiEditor {
             .enable_scrolling(false) // Disable wheel scroll
             .show(ui, |ui| {
                 let available_size = ui.available_size();
-                let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
-                
+                let (rect, response) =
+                    ui.allocate_exact_size(available_size, Sense::click_and_drag());
+
                 // Handle Zoom (Ctrl/Alt + Scroll)
                 let scroll_delta = ui.input(|i| i.raw_scroll_delta);
                 if scroll_delta != Vec2::ZERO {
-                     if ui.input(|i| i.modifiers.ctrl) {
-                         // Zoom X (Horizontal) around mouse pointer
-                         if scroll_delta.y != 0.0 {
-                             let old_zoom = self.zoom_x;
-                             let new_zoom = (self.zoom_x * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 }).clamp(10.0, 500.0);
-                             
-                             // Calculate mouse position relative to timeline start (in beats)
-                             // mouse_x = start_x + beats * zoom + scroll
-                             // beats = (mouse_x - start_x - scroll) / zoom
-                             if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                 let rel_x = mouse_pos.x - (rect.min.x + key_width);
-                                 let beats_at_mouse = (rel_x - self.manual_scroll_x) / old_zoom;
-                                 
-                                 // We want beats_at_mouse to stay at rel_x after zoom
-                                 // rel_x = beats_at_mouse * new_zoom + new_scroll
-                                 // new_scroll = rel_x - beats_at_mouse * new_zoom
-                                 self.manual_scroll_x = rel_x - beats_at_mouse * new_zoom;
-                             }
-                             
-                             self.zoom_x = new_zoom;
-                         }
+                    if ui.input(|i| i.modifiers.ctrl) {
+                        // Zoom X (Horizontal) around mouse pointer
+                        if scroll_delta.y != 0.0 {
+                            let old_zoom = self.zoom_x;
+                            let new_zoom = (self.zoom_x
+                                * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
+                            .clamp(10.0, 500.0);
+
+                            // Calculate mouse position relative to timeline start (in beats)
+                            // mouse_x = start_x + beats * zoom + scroll
+                            // beats = (mouse_x - start_x - scroll) / zoom
+                            if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                let rel_x = mouse_pos.x - (rect.min.x + key_width);
+                                let beats_at_mouse = (rel_x - self.manual_scroll_x) / old_zoom;
+
+                                // We want beats_at_mouse to stay at rel_x after zoom
+                                // rel_x = beats_at_mouse * new_zoom + new_scroll
+                                // new_scroll = rel_x - beats_at_mouse * new_zoom
+                                self.manual_scroll_x = rel_x - beats_at_mouse * new_zoom;
+                            }
+
+                            self.zoom_x = new_zoom;
+                        }
                     } else if ui.input(|i| i.modifiers.alt) {
                         // Zoom Y (Vertical) around mouse pointer
                         if scroll_delta.y != 0.0 {
                             let old_zoom = self.zoom_y;
-                            let new_zoom = (self.zoom_y * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 }).clamp(5.0, 50.0);
-                            
+                            let new_zoom = (self.zoom_y
+                                * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
+                            .clamp(5.0, 50.0);
+
                             if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
                                 let rel_y = mouse_pos.y - (rect.min.y + timeline_height);
                                 // keys_from_top = (rel_y - scroll) / zoom
@@ -655,7 +965,7 @@ impl MidiEditor {
                                 // Manually update scroll offset
                                 self.manual_scroll_x += delta.x;
                                 self.manual_scroll_y += delta.y;
-                                
+
                                 // Update start for continuous delta
                                 self.pan_start = Some(curr);
                             }
@@ -668,40 +978,41 @@ impl MidiEditor {
                     self.is_panning = false;
                     self.pan_start = None;
                 }
-                
+
                 // Apply Scroll Constraints
                 // Limit horizontal scroll: can't scroll past 0 (can't see negative time)
-                // Note: manual_scroll_x is an offset. Content moves right when scroll_x is positive? 
+                // Note: manual_scroll_x is an offset. Content moves right when scroll_x is positive?
                 // Wait, usually scroll is negative offset to move content left (to see right side).
                 // Let's assume manual_scroll_x <= 0 means we have scrolled right.
                 // If manual_scroll_x > 0, we see negative time gap.
                 // So max x is 0.
-                
+
                 if self.manual_scroll_x > 0.0 {
                     self.manual_scroll_x = 0.0;
                 }
-                
+
                 // Limit vertical scroll
                 let total_content_height = 128.0 * self.zoom_y;
                 let view_height = rect.height() - timeline_height;
-                // If content < view, pin to top. 
+                // If content < view, pin to top.
                 // If content > view, allow scrolling down to (view - content).
-                
+
                 let min_scroll_y = if total_content_height > view_height {
                     view_height - total_content_height
                 } else {
                     0.0
                 };
-                
+
                 // Clamp scroll y between min_scroll_y and 0.
                 self.manual_scroll_y = self.manual_scroll_y.clamp(min_scroll_y, 0.0);
 
                 let mut pointer_consumed = false;
                 let note_offset_x = rect.min.x + key_width + self.manual_scroll_x;
-                
+
                 // Handle playhead interaction (click or drag on timeline)
                 if let Some(pointer) = response.interact_pointer_pos() {
-                    let in_timeline = pointer.y < rect.min.y + timeline_height && pointer.x >= rect.min.x + key_width;
+                    let in_timeline = pointer.y < rect.min.y + timeline_height
+                        && pointer.x >= rect.min.x + key_width;
                     if in_timeline {
                         pointer_consumed = true;
                         let mut x = pointer.x - (rect.min.x + key_width);
@@ -710,10 +1021,12 @@ impl MidiEditor {
                         if beats >= 0.0 && ui.input(|i| i.pointer.primary_down()) {
                             self.current_time = beats * 60.0 / self.state.bpm;
                             let seconds_per_beat = 60.0 / self.state.bpm;
-                            let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
+                            let seconds_per_tick =
+                                seconds_per_beat / self.state.ticks_per_beat as f32;
                             self.last_tick = (self.current_time / seconds_per_tick) as u64;
                             self.is_dragging_note = false;
                             self.drag_action = DragAction::None;
+                            self.emit_transport_event();
                         }
                     }
                 }
@@ -723,11 +1036,11 @@ impl MidiEditor {
                     // time in beats
                     time * zoom_x
                 };
-                
+
                 let tick_to_x = |tick: u64, zoom_x: f32, ticks_per_beat: u16| -> f32 {
                     (tick as f32 / ticks_per_beat as f32) * zoom_x
                 };
-                
+
                 let note_to_y = |note: u8, zoom_y: f32| -> f32 {
                     // High notes at top, low notes at bottom.
                     (127 - note) as f32 * zoom_y
@@ -741,7 +1054,7 @@ impl MidiEditor {
                 let subdivision_color = Color32::from_rgb(90, 90, 90);
                 let horizontal_line_color = Color32::from_rgb(90, 90, 90);
                 let separator_color = Color32::from_rgb(130, 130, 130);
-                
+
                 // Draw Vertical Grid (Beats / Measures / Subdivisions)
                 let tpb = self.state.ticks_per_beat.max(1) as u64;
                 let denom = self.state.time_signature.1.max(1) as u64;
@@ -797,20 +1110,26 @@ impl MidiEditor {
                     }
                     tick += tick_step as i64;
                 }
-                
+
                 // Draw Grid (Horizontal/Notes)
                 for i in 0..=127 {
-                    let y = rect.min.y + timeline_height + note_to_y((127 - i) as u8, self.zoom_y) + self.manual_scroll_y;
-                    
+                    let y = rect.min.y
+                        + timeline_height
+                        + note_to_y((127 - i) as u8, self.zoom_y)
+                        + self.manual_scroll_y;
+
                     // Only draw if visible (and maybe clip)
                     if y > rect.min.y + timeline_height && y < rect.max.y {
                         painter.line_segment(
-                            [Pos2::new(rect.min.x + key_width, y), Pos2::new(rect.max.x, y)],
-                            Stroke::new(1.0, horizontal_line_color)
+                            [
+                                Pos2::new(rect.min.x + key_width, y),
+                                Pos2::new(rect.max.x, y),
+                            ],
+                            Stroke::new(1.0, horizontal_line_color),
                         );
                     }
                 }
-                
+
                 // Handle Note Off if we released mouse anywhere
                 if ui.input(|i| i.pointer.primary_released()) {
                     if let Some(note) = self.active_key_note {
@@ -847,9 +1166,11 @@ impl MidiEditor {
                 let notes_snapshot = self.state.notes.clone();
 
                 for note in &notes_snapshot {
-                    let x = note_offset_x + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
+                    let x = note_offset_x
+                        + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
                     let y = note_offset_y + note_to_y(note.key, self.zoom_y);
-                    let w = tick_to_x(note.duration, self.zoom_x, self.state.ticks_per_beat).max(5.0);
+                    let w =
+                        tick_to_x(note.duration, self.zoom_x, self.state.ticks_per_beat).max(5.0);
                     let h = self.zoom_y;
                     let note_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
 
@@ -864,7 +1185,11 @@ impl MidiEditor {
                         Color32::from_rgb(100, 200, 100)
                     };
                     painter.rect_filled(note_rect.shrink(1.0), 2.0, color);
-                    painter.rect_stroke(note_rect.shrink(1.0), 2.0, Stroke::new(1.0, Color32::WHITE));
+                    painter.rect_stroke(
+                        note_rect.shrink(1.0),
+                        2.0,
+                        Stroke::new(1.0, Color32::WHITE),
+                    );
 
                     if response.clicked_by(PointerButton::Primary) {
                         if let Some(pointer) = response.interact_pointer_pos() {
@@ -911,7 +1236,12 @@ impl MidiEditor {
                 if self.is_dragging_note && ui.input(|i| i.pointer.primary_down()) {
                     if let Some(pointer) = response.interact_pointer_pos() {
                         let modifiers = ui.input(|i| i.modifiers);
-                        self.update_note_drag(pointer, &pointer_to_tick, &pointer_to_key, modifiers);
+                        self.update_note_drag(
+                            pointer,
+                            &pointer_to_tick,
+                            &pointer_to_key,
+                            modifiers,
+                        );
                     }
                 }
 
@@ -932,13 +1262,18 @@ impl MidiEditor {
 
                 if !pointer_consumed && ui.input(|i| i.pointer.primary_pressed()) {
                     if let Some(pointer) = response.interact_pointer_pos() {
-                        let in_roll = pointer.x > rect.min.x + key_width && pointer.y > rect.min.y + timeline_height;
+                        let in_roll = pointer.x > rect.min.x + key_width
+                            && pointer.y > rect.min.y + timeline_height;
                         if in_roll {
                             if ui.input(|i| i.modifiers.shift) {
                                 self.selection_box_start = Some(pointer);
                                 self.selection_box_end = Some(pointer);
                             } else if !self.is_dragging_note {
-                                self.create_note_at_pointer(pointer, &pointer_to_tick, &pointer_to_key);
+                                self.create_note_at_pointer(
+                                    pointer,
+                                    &pointer_to_tick,
+                                    &pointer_to_key,
+                                );
                             }
                         }
                     }
@@ -968,13 +1303,18 @@ impl MidiEditor {
                                 std::mem::take(&mut self.selected_notes)
                             };
                             for note in &self.state.notes {
-                                let x =
-                                    note_offset_x + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
+                                let x = note_offset_x
+                                    + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
                                 let y = note_offset_y + note_to_y(note.key, self.zoom_y);
-                                let w =
-                                    tick_to_x(note.duration, self.zoom_x, self.state.ticks_per_beat).max(5.0);
+                                let w = tick_to_x(
+                                    note.duration,
+                                    self.zoom_x,
+                                    self.state.ticks_per_beat,
+                                )
+                                .max(5.0);
                                 let h = self.zoom_y;
-                                let note_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
+                                let note_rect =
+                                    Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
                                 if note_rect.intersects(selection_rect) {
                                     self.selected_notes.insert(note.id);
                                 }
@@ -991,17 +1331,15 @@ impl MidiEditor {
                 }
 
                 // double-click creation deprecated
-                
+
                 // Draw Timeline (Top Bar) - Drawn AFTER Notes
                 // Fill timeline background
-                let timeline_rect = Rect::from_min_size(
-                    rect.min,
-                    Vec2::new(rect.width(), timeline_height)
-                );
+                let timeline_rect =
+                    Rect::from_min_size(rect.min, Vec2::new(rect.width(), timeline_height));
                 painter.rect_filled(timeline_rect, 0.0, ui.visuals().window_fill());
                 painter.line_segment(
                     [timeline_rect.left_bottom(), timeline_rect.right_bottom()],
-                    Stroke::new(1.0, separator_color) // Separator line
+                    Stroke::new(1.0, separator_color), // Separator line
                 );
 
                 // Draw Timeline Labels (per measure)
@@ -1010,8 +1348,11 @@ impl MidiEditor {
                     let x = note_offset_x + (measure_tick as f32 / tpb as f32) * self.zoom_x;
                     if x >= rect.min.x + key_width - 5.0 && x <= rect.max.x {
                         painter.line_segment(
-                            [Pos2::new(x, rect.min.y), Pos2::new(x, rect.min.y + timeline_height)],
-                            Stroke::new(1.0, measure_line_color)
+                            [
+                                Pos2::new(x, rect.min.y),
+                                Pos2::new(x, rect.min.y + timeline_height),
+                            ],
+                            Stroke::new(1.0, measure_line_color),
                         );
                         let measure_index = (measure_tick / ticks_per_measure) + 1;
                         painter.text(
@@ -1019,7 +1360,7 @@ impl MidiEditor {
                             Align2::LEFT_CENTER,
                             format!("{}", measure_index),
                             FontId::proportional(11.0),
-                            Color32::GRAY
+                            Color32::GRAY,
                         );
                     }
                     measure_tick += ticks_per_measure;
@@ -1027,11 +1368,18 @@ impl MidiEditor {
 
                 // Draw Playhead (Timeline portion + Line)
                 // Drawn AFTER notes (so it's on top of notes)
-                let playhead_x = note_offset_x + time_to_x((self.current_time * self.state.bpm / 60.0) as f32, self.zoom_x);
+                let playhead_x = note_offset_x
+                    + time_to_x(
+                        (self.current_time * self.state.bpm / 60.0) as f32,
+                        self.zoom_x,
+                    );
                 if playhead_x > rect.min.x + key_width {
                     painter.line_segment(
-                        [Pos2::new(playhead_x, rect.min.y), Pos2::new(playhead_x, rect.max.y)],
-                        Stroke::new(2.0, Color32::from_rgba_premultiplied(100, 200, 255, 128))
+                        [
+                            Pos2::new(playhead_x, rect.min.y),
+                            Pos2::new(playhead_x, rect.max.y),
+                        ],
+                        Stroke::new(2.0, Color32::from_rgba_premultiplied(100, 200, 255, 128)),
                     );
                 }
 
@@ -1039,47 +1387,58 @@ impl MidiEditor {
                 // Fill background for sidebar to occlude content
                 let sidebar_rect = Rect::from_min_size(
                     Pos2::new(rect.min.x, rect.min.y + timeline_height),
-                    Vec2::new(key_width, rect.height() - timeline_height)
+                    Vec2::new(key_width, rect.height() - timeline_height),
                 );
                 painter.rect_filled(sidebar_rect, 0.0, ui.visuals().window_fill());
 
                 for i in 0..=127 {
-                    let y = rect.min.y + timeline_height + note_to_y((127 - i) as u8, self.zoom_y) + self.manual_scroll_y;
-                    
+                    let y = rect.min.y
+                        + timeline_height
+                        + note_to_y((127 - i) as u8, self.zoom_y)
+                        + self.manual_scroll_y;
+
                     // Only draw if visible
                     if y > rect.min.y + timeline_height && y < rect.max.y {
                         let note_idx = 127 - i;
                         let is_black = [1, 3, 6, 8, 10].contains(&(note_idx % 12));
-                        let key_color = if is_black { Color32::BLACK } else { Color32::WHITE };
-                        let text_color = if is_black { Color32::WHITE } else { Color32::BLACK };
-                        
+                        let key_color = if is_black {
+                            Color32::BLACK
+                        } else {
+                            Color32::WHITE
+                        };
+                        let text_color = if is_black {
+                            Color32::WHITE
+                        } else {
+                            Color32::BLACK
+                        };
+
                         let key_rect = Rect::from_min_size(
                             Pos2::new(rect.min.x, y),
-                            Vec2::new(key_width, self.zoom_y)
+                            Vec2::new(key_width, self.zoom_y),
                         );
-                        
+
                         painter.rect_filled(key_rect, 0.0, key_color);
                         painter.rect_stroke(key_rect, 0.0, Stroke::new(1.0, Color32::GRAY));
-                        
+
                         // C notes label
-                        if note_idx >= 12 && (note_idx - 12) % 12 == 0 { 
+                        if note_idx >= 12 && (note_idx - 12) % 12 == 0 {
                             painter.text(
                                 key_rect.left_center() + Vec2::new(2.0, 0.0),
                                 Align2::LEFT_CENTER,
                                 format!("C{}", (note_idx / 12) as i32 - 1),
                                 FontId::proportional(10.0),
-                                text_color
+                                text_color,
                             );
                         } else if note_idx < 12 && note_idx % 12 == 0 {
-                             painter.text(
+                            painter.text(
                                 key_rect.left_center() + Vec2::new(2.0, 0.0),
                                 Align2::LEFT_CENTER,
                                 format!("C{}", (note_idx as i32 / 12) - 1),
                                 FontId::proportional(10.0),
-                                text_color
+                                text_color,
                             );
                         }
-                        
+
                         // Interaction: Click Key to preview
                         if ui.rect_contains_pointer(key_rect) {
                             if ui.input(|i| i.pointer.primary_pressed()) {
@@ -1094,22 +1453,13 @@ impl MidiEditor {
             });
     }
 
-    fn draw_dashed_vertical_line(
-        painter: &Painter,
-        x: f32,
-        top: f32,
-        bottom: f32,
-        stroke: Stroke,
-    ) {
+    fn draw_dashed_vertical_line(painter: &Painter, x: f32, top: f32, bottom: f32, stroke: Stroke) {
         let dash_len = 2.0;
         let gap_len = 2.0;
         let mut y = top;
         while y < bottom {
             let next = (y + dash_len).min(bottom);
-            painter.line_segment(
-                [Pos2::new(x, y), Pos2::new(x, next)],
-                stroke.clone(),
-            );
+            painter.line_segment([Pos2::new(x, y), Pos2::new(x, next)], stroke.clone());
             y += dash_len + gap_len;
         }
     }
@@ -1119,7 +1469,8 @@ impl MidiEditor {
     }
 
     fn sort_notes(&mut self) {
-        self.state.notes
+        self.state
+            .notes
             .sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.id.0.cmp(&b.id.0)));
     }
 
@@ -1139,6 +1490,160 @@ impl MidiEditor {
     fn note_mut_by_id(&mut self, id: NoteId) -> Option<&mut Note> {
         let idx = self.note_index_by_id(id)?;
         self.state.notes.get_mut(idx)
+    }
+
+    fn note_by_id(&self, id: NoteId) -> Option<Note> {
+        self.state.notes.iter().copied().find(|n| n.id == id)
+    }
+
+    fn first_selected_note(&self) -> Option<Note> {
+        self.selected_notes
+            .iter()
+            .next()
+            .and_then(|id| self.note_by_id(*id))
+    }
+
+    fn selected_notes_snapshot(&self) -> Vec<Note> {
+        self.selected_notes
+            .iter()
+            .filter_map(|id| self.note_by_id(*id))
+            .collect()
+    }
+
+    fn edit_note_by_id<F>(&mut self, id: NoteId, mut edit: F)
+    where
+        F: FnMut(&mut Note),
+    {
+        if let Some(idx) = self.note_index_by_id(id) {
+            self.push_undo_snapshot();
+            let before = self.state.notes[idx];
+            edit(&mut self.state.notes[idx]);
+            self.state.notes[idx].duration = self.state.notes[idx].duration.max(1);
+            let after = self.state.notes[idx];
+            self.sort_notes();
+            self.emit_note_updated(before, after);
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        self.clipboard = self.selected_notes_snapshot();
+        self.clipboard.sort_by_key(|n| n.start);
+    }
+
+    fn cut_selection(&mut self) {
+        if self.selected_notes.is_empty() {
+            return;
+        }
+        self.copy_selection();
+        let ids: Vec<_> = self.selected_notes.iter().copied().collect();
+        self.remove_notes(ids);
+    }
+
+    fn paste_clipboard_at(&mut self, target_tick: u64) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        let min_start = self
+            .clipboard
+            .iter()
+            .map(|n| n.start)
+            .min()
+            .unwrap_or(target_tick);
+        let offset = target_tick.saturating_sub(min_start);
+        let templates = self.clipboard.clone();
+        self.push_undo_snapshot();
+        let previous = self.selected_notes.clone();
+        self.selected_notes.clear();
+        for template in templates {
+            let new_note = Note::new(
+                template.start + offset,
+                template.duration,
+                template.key,
+                template.velocity,
+            );
+            self.state.notes.push(new_note);
+            self.emit_note_added(new_note);
+            self.selected_notes.insert(new_note.id);
+        }
+        self.sort_notes();
+        self.notify_selection_changed(previous);
+    }
+
+    fn delete_selected_notes(&mut self) {
+        if self.selected_notes.is_empty() {
+            return;
+        }
+        let ids: Vec<_> = self.selected_notes.iter().copied().collect();
+        self.remove_notes(ids);
+    }
+
+    fn quantize_selected_notes(&mut self) {
+        if self.selected_notes.is_empty() || self.snap_interval == 0 {
+            return;
+        }
+        self.push_undo_snapshot();
+        let ids: Vec<_> = self.selected_notes.iter().copied().collect();
+        for id in ids {
+            let start_tick = self.note_by_id(id).map(|n| n.start).unwrap_or(0);
+            let snapped = self.snap_tick(start_tick as i64, None, false);
+            if let Some((before, after)) = self.note_mut_by_id(id).map(|note| {
+                let before = *note;
+                note.start = snapped;
+                let after = *note;
+                (before, after)
+            }) {
+                self.emit_note_updated(before, after);
+            }
+        }
+        self.sort_notes();
+    }
+
+    fn current_tick_position(&self) -> u64 {
+        if self.state.ticks_per_beat == 0 {
+            return 0;
+        }
+        let seconds_per_beat = 60.0 / self.state.bpm.max(1.0);
+        let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat as f32;
+        (self.current_time / seconds_per_tick).max(0.0) as u64
+    }
+
+    fn notify_playback_started(&self) {
+        if let Some(observer) = &self.playback_observer {
+            observer.on_playback_started();
+        }
+    }
+
+    fn notify_playback_stopped(&self) {
+        if let Some(observer) = &self.playback_observer {
+            observer.on_playback_stopped();
+        }
+    }
+
+    fn handle_shortcuts(&mut self, ctx: &Context) {
+        let command = ctx.input(|i| i.modifiers.command);
+        let shift = ctx.input(|i| i.modifiers.shift);
+        if command && ctx.input(|i| i.key_pressed(Key::C)) {
+            self.copy_selection();
+        }
+        if command && ctx.input(|i| i.key_pressed(Key::X)) {
+            self.cut_selection();
+        }
+        if command && ctx.input(|i| i.key_pressed(Key::V)) {
+            let tick = self.current_tick_position();
+            self.paste_clipboard_at(tick);
+        }
+        if ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) {
+            self.delete_selected_notes();
+        }
+        if command && ctx.input(|i| i.key_pressed(Key::Z)) {
+            if shift {
+                self.redo();
+            } else {
+                self.undo();
+            }
+        } else if command && ctx.input(|i| i.key_pressed(Key::Y)) {
+            self.redo();
+        }
     }
 
     fn delete_note_by_id(&mut self, id: NoteId) {
@@ -1174,8 +1679,10 @@ impl MidiEditor {
 
     fn resolve_drag_action(&self, pointer: Pos2, rect: Rect) -> DragAction {
         const HANDLE_WIDTH: f32 = 6.0;
-        let left_handle = Rect::from_min_max(rect.min, Pos2::new(rect.min.x + HANDLE_WIDTH, rect.max.y));
-        let right_handle = Rect::from_min_max(Pos2::new(rect.max.x - HANDLE_WIDTH, rect.min.y), rect.max);
+        let left_handle =
+            Rect::from_min_max(rect.min, Pos2::new(rect.min.x + HANDLE_WIDTH, rect.max.y));
+        let right_handle =
+            Rect::from_min_max(Pos2::new(rect.max.x - HANDLE_WIDTH, rect.min.y), rect.max);
         if left_handle.contains(pointer) {
             DragAction::ResizeStart
         } else if right_handle.contains(pointer) {
@@ -1185,7 +1692,13 @@ impl MidiEditor {
         }
     }
 
-    fn begin_note_drag(&mut self, anchor: NoteId, pointer: Pos2, pointer_tick: i64, action: DragAction) {
+    fn begin_note_drag(
+        &mut self,
+        anchor: NoteId,
+        pointer: Pos2,
+        pointer_tick: i64,
+        action: DragAction,
+    ) {
         if self.selected_notes.is_empty() {
             self.set_single_selection(anchor);
         }
@@ -1198,14 +1711,18 @@ impl MidiEditor {
         self.drag_original_notes = self
             .selected_notes
             .iter()
-            .filter_map(|id| self.note_index_by_id(*id).map(|idx| (*id, self.state.notes[idx])))
+            .filter_map(|id| {
+                self.note_index_by_id(*id)
+                    .map(|idx| (*id, self.state.notes[idx]))
+            })
             .collect();
         if let Some(note) = self.state.notes.iter().find(|n| n.id == anchor) {
             self.drag_original_start = Some(note.start);
             self.drag_original_duration = Some(note.duration);
             self.drag_original_key = Some(note.key);
         }
-        self.drag_pointer_offset_ticks = Some(pointer_tick - self.drag_original_start.unwrap_or(0) as i64);
+        self.drag_pointer_offset_ticks =
+            Some(pointer_tick - self.drag_original_start.unwrap_or(0) as i64);
         self.drag_changed_note = false;
         if matches!(action, DragAction::Move | DragAction::None) {
             if let Some(note) = self.state.notes.iter().find(|n| n.id == anchor) {
@@ -1270,7 +1787,11 @@ impl MidiEditor {
                     None => return,
                 };
                 let offset = self.drag_pointer_offset_ticks.unwrap_or(0);
-                let snapped = self.snap_tick(pointer_tick - offset, Some(anchor_original.start), disable_snap);
+                let snapped = self.snap_tick(
+                    pointer_tick - offset,
+                    Some(anchor_original.start),
+                    disable_snap,
+                );
                 let delta = snapped as i64 - anchor_original.start as i64;
                 let key_delta = key as i16 - anchor_original.key as i16;
                 for (id, original) in &originals_snapshot {
@@ -1301,7 +1822,8 @@ impl MidiEditor {
                         .find(|(id, _)| *id == anchor_id)
                         .map(|(_, note)| *note)
                     {
-                        let snapped = self.snap_tick(pointer_tick, Some(original.start), disable_snap);
+                        let snapped =
+                            self.snap_tick(pointer_tick, Some(original.start), disable_snap);
                         let end = original.start + original.duration;
                         let new_start = snapped.min(end.saturating_sub(1));
                         if let Some(note) = self.note_mut_by_id(anchor_id) {

@@ -8,6 +8,12 @@ pub trait PlaybackBackend {
     fn note_off(&self, key: u8);
     fn all_notes_off(&self);
     fn set_volume(&self, volume: f32);
+    fn set_pitch_shift(&self, semitones: f32);
+}
+
+pub trait PlaybackObserver: Send + Sync {
+    fn on_playback_started(&self) {}
+    fn on_playback_stopped(&self) {}
 }
 
 /// 默认的正弦波播放实现，提供多复音与 ADSR。
@@ -58,6 +64,10 @@ impl PlaybackBackend for AudioEngine {
     fn set_volume(&self, volume: f32) {
         self.dispatch(AudioMessage::SetVolume(volume));
     }
+
+    fn set_pitch_shift(&self, semitones: f32) {
+        self.dispatch(AudioMessage::SetPitchShift(semitones));
+    }
 }
 
 /// 空实现，允许宿主禁用音频输出。
@@ -69,6 +79,7 @@ impl PlaybackBackend for NullPlayback {
     fn note_off(&self, _key: u8) {}
     fn all_notes_off(&self) {}
     fn set_volume(&self, _volume: f32) {}
+    fn set_pitch_shift(&self, _semitones: f32) {}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -100,6 +111,7 @@ enum AudioMessage {
     NoteOff { key: u8 },
     AllNotesOff,
     SetVolume(f32),
+    SetPitchShift(f32),
 }
 
 struct PolyphonicSynth {
@@ -108,6 +120,7 @@ struct PolyphonicSynth {
     sample_rate: u32,
     volume: f32,
     config: SineSynthConfig,
+    pitch_shift: f32,
 }
 
 impl PolyphonicSynth {
@@ -118,6 +131,7 @@ impl PolyphonicSynth {
             sample_rate: config.sample_rate,
             volume: 0.5,
             config,
+            pitch_shift: 0.0,
         }
     }
 
@@ -129,7 +143,13 @@ impl PolyphonicSynth {
                     if self.voices.len() >= self.config.max_voices {
                         self.voices.remove(0);
                     }
-                    self.voices.push(Voice::new(key, velocity, self.sample_rate, &self.config));
+                    self.voices.push(Voice::new(
+                        key,
+                        velocity,
+                        self.sample_rate,
+                        &self.config,
+                        self.pitch_shift,
+                    ));
                 }
                 AudioMessage::NoteOff { key } => {
                     for voice in &mut self.voices {
@@ -143,6 +163,12 @@ impl PolyphonicSynth {
                 }
                 AudioMessage::SetVolume(vol) => {
                     self.volume = vol.clamp(0.0, 2.0);
+                }
+                AudioMessage::SetPitchShift(semi) => {
+                    self.pitch_shift = semi.clamp(-24.0, 24.0);
+                    for voice in &mut self.voices {
+                        voice.set_pitch_shift(self.pitch_shift);
+                    }
                 }
             }
         }
@@ -194,9 +220,17 @@ struct Voice {
 }
 
 impl Voice {
-    fn new(key: u8, velocity: u8, sample_rate: u32, config: &SineSynthConfig) -> Self {
+    fn new(
+        key: u8,
+        velocity: u8,
+        sample_rate: u32,
+        config: &SineSynthConfig,
+        pitch_shift: f32,
+    ) -> Self {
+        let mut osc = Oscillator::new(key, velocity);
+        osc.set_pitch_shift(pitch_shift);
         Self {
-            osc: Oscillator::new(key, velocity),
+            osc,
             env: AdsrEnvelope::new(sample_rate, config),
             key,
         }
@@ -215,10 +249,15 @@ impl Voice {
     fn is_finished(&self) -> bool {
         self.env.is_idle()
     }
+
+    fn set_pitch_shift(&mut self, semitones: f32) {
+        self.osc.set_pitch_shift(semitones);
+    }
 }
 
 struct Oscillator {
     phase: f32,
+    base_frequency: f32,
     frequency: f32,
     velocity: f32,
 }
@@ -228,6 +267,7 @@ impl Oscillator {
         let frequency = 440.0 * 2.0f32.powf((key as f32 - 69.0) / 12.0);
         Self {
             phase: 0.0,
+            base_frequency: frequency,
             frequency,
             velocity: velocity as f32 / 127.0,
         }
@@ -240,6 +280,11 @@ impl Oscillator {
             self.phase -= 1.0;
         }
         sample
+    }
+
+    fn set_pitch_shift(&mut self, semitones: f32) {
+        let ratio = 2.0f32.powf(semitones / 12.0);
+        self.frequency = self.base_frequency * ratio;
     }
 }
 
