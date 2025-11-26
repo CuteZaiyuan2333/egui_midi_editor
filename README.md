@@ -13,84 +13,84 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
 
 ## 🎵 Features
 
-### 核心编辑功能
+### Core Editing Features
 - **Visual MIDI Editor**: Intuitive piano roll interface for editing *one track at a time*
-  - 音符创建、选择、拖拽移动
-  - 音符长度调整（拖拽右边缘）
-  - 多选支持（Ctrl/Cmd + 点击，Shift + 点击扩展选择）
-  - 框选（拖拽选择区域）
-  - 吸附到网格（可配置吸附间隔和模式）
+  - Note creation, selection, drag and move
+  - Note length adjustment (drag right edge)
+  - Multi-select support (Ctrl/Cmd + click, Shift + click to extend selection)
+  - Box selection (drag selection area)
+  - Snap to grid (configurable snap interval and mode)
   
 - **Inspector & Clipboard**: 
-  - 多选音符的属性编辑（音高、力度、开始时间、持续时间）
-  - 复制/剪切/粘贴（Ctrl/Cmd + C/X/V）
-  - 删除选中音符（Delete/Backspace）
-  - 量化到网格（Quantize to snap grid）
+  - Property editing for multi-selected notes (pitch, velocity, start time, duration)
+  - Copy/Cut/Paste (Ctrl/Cmd + C/X/V)
+  - Delete selected notes (Delete/Backspace)
+  - Quantize to snap grid
   
 - **Undo / Redo Stack**: 
-  - 完整的撤销/重做系统，记录所有编辑操作
-  - 键盘快捷键：Ctrl/Cmd + Z（撤销），Ctrl/Cmd + Shift + Z 或 Ctrl/Cmd + Y（重做）
+  - Complete undo/redo system that records all editing operations
+  - Keyboard shortcuts: Ctrl/Cmd + Z (undo), Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y (redo)
 
-### 曲线编辑功能
-- **Velocity Curve（力度曲线）**:
-  - 可视化力度曲线编辑
-  - 添加、编辑、删除曲线点
-  - 线性插值计算力度值
-  - 曲线值范围：0-127
-  - 导出MIDI时自动应用曲线到音符力度
+### Curve Editing Features
+- **Velocity Curve**:
+  - Visual velocity curve editing
+  - Add, edit, and delete curve points
+  - Linear interpolation for velocity values
+  - Value range: 0-127
+  - Automatically applies curve to note velocities when exporting MIDI
   
-- **Pitch Curve（音高曲线）**:
-  - 音高偏移曲线编辑（支持半音偏移）
-  - 曲线值范围：-12 到 +12 半音
-  - 与力度曲线相同的编辑功能
+- **Pitch Curve**:
+  - Pitch offset curve editing (supports semitone offsets)
+  - Value range: -12 to +12 semitones
+  - Same editing capabilities as velocity curve
   
-- **曲线编辑器界面**:
-  - 可调整的分割器（Splitter）调整钢琴卷帘和曲线编辑器的高度比例
-  - 曲线通道的启用/禁用切换
-  - 实时预览曲线效果
+- **Curve Editor Interface**:
+  - Adjustable splitter to control height ratio between piano roll and curve editor
+  - Enable/disable toggle for curve lanes
+  - Real-time curve effect preview
 
-### 音频播放功能
+### Audio Playback Features
 - **Real-time Audio Playback**: 
-  - 内置音频引擎，支持实时预览
-  - ADSR包络合成（Attack, Decay, Sustain, Release）
-  - 音高偏移预览（Pitch Shift Preview）
-  - 音量控制
-  - 可插拔的音频后端接口（`PlaybackBackend`），支持集成到DAW的音频系统
+  - Built-in audio engine with real-time preview
+  - ADSR envelope synthesis (Attack, Decay, Sustain, Release)
+  - Pitch shift preview
+  - Volume control
+  - Pluggable audio backend interface (`PlaybackBackend`) for integration with DAW audio systems
 
-### 传输控制
+### Transport Controls
 - **Transport Controls**: 
-  - 播放/暂停（Space键或程序控制）
-  - BPM控制（可设置和实时调整）
-  - 时间轴定位（Seek）
-  - 循环播放支持（Loop regions，可配置开始和结束位置）
-  - 时间签名设置（Time Signature）
+  - Play/Pause (Space key or programmatic control)
+  - BPM control (configurable and real-time adjustment)
+  - Timeline positioning (Seek)
+  - Loop playback support (Loop regions with configurable start and end positions)
+  - Time signature settings
 
-### 文件I/O
+### File I/O
 - **Strict Single-Track I/O**: 
-  - MIDI文件导入/导出（使用midly库）
-  - 单轨验证（`from_smf_strict` 确保单轨单通道）
-  - `.aquamidi` 项目格式支持（示例应用）
-  - 标准`.mid`文件导出
+  - MIDI file import/export (using midly library)
+  - Single-track validation (`from_smf_strict` ensures single track and single channel)
+  - `.aquamidi` project format support (example app)
+  - Standard `.mid` file export
 
-### 开发者API
+### Developer API
 - **Developer-Friendly API**: 
-  - 事件/命令总线系统（`EditorEvent` / `EditorCommand`）
-  - 严格验证辅助函数
-  - 播放观察者接口（`PlaybackObserver`）
-  - 可自定义选项（`MidiEditorOptions`）
-  - 事件监听器（`set_event_listener`）
+  - Event/command bus system (`EditorEvent` / `EditorCommand`)
+  - Strict validation helper functions
+  - Playback observer interface (`PlaybackObserver`)
+  - Customizable options (`MidiEditorOptions`)
+  - Event listener (`set_event_listener`)
 
-### 其他特性
+### Other Features
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Modular Architecture**: Clean separation between UI, audio, and MIDI processing
 - **Keyboard Shortcuts**: 
-  - `Space`: 播放/暂停
-  - `Ctrl/Cmd + C`: 复制
-  - `Ctrl/Cmd + X`: 剪切
-  - `Ctrl/Cmd + V`: 粘贴
-  - `Ctrl/Cmd + Z`: 撤销
-  - `Ctrl/Cmd + Shift + Z` 或 `Ctrl/Cmd + Y`: 重做
-  - `Delete` / `Backspace`: 删除选中音符
+  - `Space`: Play/Pause
+  - `Ctrl/Cmd + C`: Copy
+  - `Ctrl/Cmd + X`: Cut
+  - `Ctrl/Cmd + V`: Paste
+  - `Ctrl/Cmd + Z`: Undo
+  - `Ctrl/Cmd + Shift + Z` or `Ctrl/Cmd + Y`: Redo
+  - `Delete` / `Backspace`: Delete selected notes
 
 ## 🏗️ Architecture
 
@@ -241,84 +241,84 @@ impl PlaybackBackend for DawAudioBackend {
 - **Events & Commands**: Subscribe via `set_event_listener` to react to user edits, and use `apply_command` to drive transport/selection from your host
 - **Embedding Checklist**: See [docs/embedding.md](docs/embedding.md) for a step-by-step guide
 
-## 📝 已实现功能详细列表
+## 📝 Implemented Features Detailed List
 
-### 音符编辑
-- ✅ 点击空白区域创建新音符
-- ✅ 点击音符进行选择
-- ✅ 拖拽音符移动位置
-- ✅ 拖拽音符右边缘调整长度
-- ✅ Ctrl/Cmd + 点击：切换选择
-- ✅ Shift + 点击：扩展选择
-- ✅ 拖拽框选多个音符
-- ✅ 吸附到网格（Snap to grid）
-- ✅ 吸附模式：绝对模式（Absolute）和相对模式（Relative）
+### Note Editing
+- ✅ Click empty area to create new note
+- ✅ Click note to select
+- ✅ Drag note to move position
+- ✅ Drag note right edge to adjust length
+- ✅ Ctrl/Cmd + Click: Toggle selection
+- ✅ Shift + Click: Extend selection
+- ✅ Drag to box-select multiple notes
+- ✅ Snap to grid
+- ✅ Snap modes: Absolute and Relative
 
-### 剪贴板操作
-- ✅ 复制选中音符（Ctrl/Cmd + C）
-- ✅ 剪切选中音符（Ctrl/Cmd + X）
-- ✅ 粘贴音符（Ctrl/Cmd + V）
-- ✅ 删除选中音符（Delete/Backspace）
+### Clipboard Operations
+- ✅ Copy selected notes (Ctrl/Cmd + C)
+- ✅ Cut selected notes (Ctrl/Cmd + X)
+- ✅ Paste notes (Ctrl/Cmd + V)
+- ✅ Delete selected notes (Delete/Backspace)
 
-### 撤销/重做
-- ✅ 完整的操作历史记录
-- ✅ 撤销（Ctrl/Cmd + Z）
-- ✅ 重做（Ctrl/Cmd + Shift + Z 或 Ctrl/Cmd + Y）
+### Undo/Redo
+- ✅ Complete operation history
+- ✅ Undo (Ctrl/Cmd + Z)
+- ✅ Redo (Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y)
 
-### 检查器面板
-- ✅ 显示选中音符的属性
-- ✅ 编辑音高（Key）
-- ✅ 编辑力度（Velocity）
-- ✅ 编辑开始时间（Start）
-- ✅ 编辑持续时间（Duration）
-- ✅ 多选时批量编辑
+### Inspector Panel
+- ✅ Display selected note properties
+- ✅ Edit pitch (Key)
+- ✅ Edit velocity
+- ✅ Edit start time
+- ✅ Edit duration
+- ✅ Batch edit for multi-selection
 
-### 曲线编辑
-- ✅ 力度曲线（Velocity Curve）
-  - 添加曲线点（点击曲线区域）
-  - 拖拽曲线点调整位置和值
-  - 删除曲线点（右键点击或Delete键）
-  - 线性插值计算
-  - 导出时自动应用到音符
-- ✅ 音高曲线（Pitch Curve）
-  - 与力度曲线相同的编辑功能
-  - 支持-12到+12半音偏移
-- ✅ 曲线通道管理
-  - 启用/禁用曲线通道
-  - 可调整的分割器调整界面布局
+### Curve Editing
+- ✅ Velocity Curve
+  - Add curve points (click on curve area)
+  - Drag curve points to adjust position and value
+  - Delete curve points (right-click or Delete key)
+  - Linear interpolation calculation
+  - Automatically applied to notes on export
+- ✅ Pitch Curve
+  - Same editing capabilities as velocity curve
+  - Supports -12 to +12 semitone offsets
+- ✅ Curve Lane Management
+  - Enable/disable curve lanes
+  - Adjustable splitter for interface layout
 
-### 音频播放
-- ✅ 实时音频预览
-- ✅ ADSR包络合成
-- ✅ 音量控制
-- ✅ 音高偏移预览
-- ✅ 可插拔音频后端接口
+### Audio Playback
+- ✅ Real-time audio preview
+- ✅ ADSR envelope synthesis
+- ✅ Volume control
+- ✅ Pitch shift preview
+- ✅ Pluggable audio backend interface
 
-### 传输控制
-- ✅ 播放/暂停（Space键）
-- ✅ BPM设置和调整
-- ✅ 时间签名设置
-- ✅ 时间轴定位（Seek）
-- ✅ 循环播放配置
+### Transport Controls
+- ✅ Play/Pause (Space key)
+- ✅ BPM setting and adjustment
+- ✅ Time signature settings
+- ✅ Timeline positioning (Seek)
+- ✅ Loop playback configuration
 
-### 文件操作
-- ✅ 导入MIDI文件（单轨验证）
-- ✅ 导出MIDI文件
-- ✅ `.aquamidi` 项目格式（示例应用）
-- ✅ 标准`.mid`文件导出
+### File Operations
+- ✅ Import MIDI files (single-track validation)
+- ✅ Export MIDI files
+- ✅ `.aquamidi` project format (example app)
+- ✅ Standard `.mid` file export
 
-### 视图控制
-- ✅ 水平/垂直缩放
-- ✅ 滚动视图
-- ✅ 定位到指定音高
-- ✅ 可调整的曲线编辑器高度
+### View Controls
+- ✅ Horizontal/vertical zoom
+- ✅ Scroll view
+- ✅ Center on specified pitch
+- ✅ Adjustable curve editor height
 
 ## ⚠️ Current Limitations
 
-- **严格单轨限制**: 验证拒绝多轨或混合通道的SMF文件
-- **示例应用限制**: 示例应用只能打开/保存`.aquamidi`项目文件（使用"导出MIDI"功能导出`.mid`文件）
-- **高级编辑功能**: 人性化（Humanize）、套索选择（Lasso selection）等高级功能仍在计划中
-- **多曲线通道**: 目前主要支持力度曲线，音高曲线功能已实现但UI集成可能需要进一步完善
+- **Strict Single-Track Constraint**: Validation rejects multi-track or mixed-channel SMF files
+- **Example App Limitation**: The example app can only open/save `.aquamidi` project files (use "Export MIDI" to export `.mid` files)
+- **Advanced Editing Features**: Advanced features such as humanize, lasso selection, etc. are still planned
+- **Multiple Curve Lanes**: Currently primarily supports velocity curves; pitch curve functionality is implemented but UI integration may need further refinement
 
 ## 🛠️ Development
 
@@ -366,62 +366,62 @@ We welcome contributions that improve:
 
 ## 📋 Roadmap
 
-### 已实现功能 ✅
-- [x] **单轨钢琴卷帘编辑器**
-  - 音符创建、选择、拖拽、调整大小
-  - 多选和框选
-  - 吸附到网格（Snap to grid）
+### Implemented Features ✅
+- [x] **Single-Track Piano Roll Editor**
+  - Note creation, selection, drag, and resize
+  - Multi-select and box selection
+  - Snap to grid
   
-- [x] **检查器和剪贴板**
-  - 音符属性编辑（音高、力度、时间、持续时间）
-  - 复制/剪切/粘贴
-  - 删除操作
+- [x] **Inspector & Clipboard**
+  - Note property editing (pitch, velocity, time, duration)
+  - Copy/Cut/Paste
+  - Delete operations
   
-- [x] **撤销/重做系统**
-  - 完整的操作历史记录
-  - 键盘快捷键支持
+- [x] **Undo/Redo System**
+  - Complete operation history
+  - Keyboard shortcut support
   
-- [x] **曲线编辑功能**
-  - 力度曲线（Velocity Curve）编辑
-  - 音高曲线（Pitch Curve）编辑
-  - 曲线点添加、编辑、删除
-  - 线性插值计算
-  - 可调整的分割器界面
+- [x] **Curve Editing Features**
+  - Velocity curve editing
+  - Pitch curve editing
+  - Curve point add, edit, delete
+  - Linear interpolation calculation
+  - Adjustable splitter interface
   
-- [x] **音频播放引擎**
-  - 实时音频预览
-  - ADSR合成
-  - 音量和音高偏移控制
-  - 可插拔音频后端接口
+- [x] **Audio Playback Engine**
+  - Real-time audio preview
+  - ADSR synthesis
+  - Volume and pitch shift control
+  - Pluggable audio backend interface
   
-- [x] **传输控制**
-  - 播放/暂停/停止
-  - BPM控制
-  - 时间轴定位
-  - 循环播放支持
+- [x] **Transport Controls**
+  - Play/Pause/Stop
+  - BPM control
+  - Timeline positioning
+  - Loop playback support
   
-- [x] **文件I/O**
-  - 严格单轨验证（`from_smf_strict`）
-  - `.aquamidi` 项目格式
-  - 标准`.mid`文件导出
+- [x] **File I/O**
+  - Strict single-track validation (`from_smf_strict`)
+  - `.aquamidi` project format
+  - Standard `.mid` file export
   
-- [x] **开发者API**
-  - 事件/命令总线系统
-  - 播放观察者接口
-  - 可自定义选项
+- [x] **Developer API**
+  - Event/command bus system
+  - Playback observer interface
+  - Customizable options
 
-### 计划中功能 🚧
-- [ ] 循环播放UI改进和传输反馈优化
-- [ ] 高级编辑工具：人性化（Humanize）、批量变换
-- [ ] 密集编排的性能优化
-- [ ] 更好的API设计 + 全面的文档和示例
-- [ ] 示例应用支持直接导入`.mid`文件
+### Planned Features 🚧
+- [ ] Loop playback UI improvements and transport feedback optimization
+- [ ] Advanced editing tools: Humanize, batch transforms
+- [ ] Performance optimizations for dense arrangements
+- [ ] Better API design + comprehensive documentation and examples
+- [ ] Example app support for direct `.mid` file import
 
-### 未来考虑 💡
-- [ ] 和弦/音阶感知编辑辅助
-- [ ] 可自定义UI主题
-- [ ] 插件式扩展点
-- [ ] 超出SMF单轨的导出选项
+### Future Considerations 💡
+- [ ] Chord/scale-aware editing helpers
+- [ ] Customizable UI themes
+- [ ] Plugin-style extension points
+- [ ] Export options beyond SMF single-track
 
 **Note**: This project focuses on single-track editing. Multi-track editing, VST support, MIDI device I/O, and sample-based synthesis are **not** planned features, as they are better handled by the host DAW application.
 
