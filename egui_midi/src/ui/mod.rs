@@ -1,6 +1,6 @@
 use crate::audio::{PlaybackBackend, PlaybackObserver};
 use crate::editor::{EditorCommand, EditorEvent, MidiEditorOptions, SnapMode, TransportState};
-use crate::structure::{MidiState, Note, NoteId};
+use crate::structure::{CurveLaneId, CurvePointId, CurveLaneType, MidiState, Note, NoteId};
 use egui::*;
 use midly::Smf;
 use std::collections::BTreeSet;
@@ -15,6 +15,20 @@ pub enum DragAction {
     ResizeStart,
     ResizeEnd,
     Create,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum LaneType {
+    Pitch,
+    Velocity,
+}
+
+#[allow(dead_code)]
+struct LaneEditState {
+    lane: LaneType,
+    anchor: NoteId,
+    originals: Vec<(NoteId, Note)>,
 }
 
 pub struct MidiEditor {
@@ -73,6 +87,18 @@ pub struct MidiEditor {
     pub undo_stack: Vec<MidiState>,
     pub redo_stack: Vec<MidiState>,
     pub drag_changed_note: bool,
+    #[allow(dead_code)]
+    lane_edit_state: Option<LaneEditState>,
+    #[allow(dead_code)]
+    lane_edit_changed: bool,
+    
+    // Curve editing state
+    pub selected_curve_lane: Option<CurveLaneId>,
+    pub dragging_curve_point: Option<(CurveLaneId, CurvePointId)>,
+    pub curve_lane_height: f32,
+    pub curve_lane_visible: bool,
+    pub dragging_splitter: bool,
+    pub splitter_ratio: f32, // Ratio of piano roll height (0.0-1.0)
 }
 
 impl MidiEditor {
@@ -144,6 +170,14 @@ impl MidiEditor {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             drag_changed_note: false,
+            lane_edit_state: None,
+            lane_edit_changed: false,
+            selected_curve_lane: None,
+            dragging_curve_point: None,
+            curve_lane_height: 120.0,
+            curve_lane_visible: true,
+            dragging_splitter: false,
+            splitter_ratio: 0.7, // 70% for piano roll, 30% for curve editor
         }
     }
 
@@ -433,6 +467,49 @@ impl MidiEditor {
             EditorCommand::OverrideTransport(state) => {
                 self.set_transport_state(state);
             }
+            EditorCommand::AddCurvePoint { lane_id, tick, value } => {
+                self.push_undo_snapshot();
+                if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                    let point = lane.insert_point(tick, value);
+                    self.emit_event(EditorEvent::CurvePointAdded {
+                        lane_id,
+                        point_id: point.id,
+                    });
+                }
+            }
+            EditorCommand::UpdateCurvePoint {
+                lane_id,
+                point_id,
+                tick,
+                value,
+            } => {
+                self.push_undo_snapshot();
+                if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                    if lane.update_point(point_id, tick, value).is_some() {
+                        self.emit_event(EditorEvent::CurvePointUpdated {
+                            lane_id,
+                            point_id,
+                        });
+                    }
+                }
+            }
+            EditorCommand::RemoveCurvePoint { lane_id, point_id } => {
+                self.push_undo_snapshot();
+                if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                    if lane.remove_point(point_id).is_some() {
+                        self.emit_event(EditorEvent::CurvePointRemoved {
+                            lane_id,
+                            point_id,
+                        });
+                    }
+                }
+            }
+            EditorCommand::ToggleCurveLaneEnabled { lane_id } => {
+                self.push_undo_snapshot();
+                if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                    lane.enabled = !lane.enabled;
+                }
+            }
         }
     }
 
@@ -483,6 +560,23 @@ impl MidiEditor {
         self.drag_changed_note = false;
     }
 
+    #[allow(dead_code)]
+    fn finalize_lane_edit(&mut self) {
+        if let Some(state) = self.lane_edit_state.take() {
+            if self.lane_edit_changed {
+                for (id, before) in state.originals {
+                    if let Some(idx) = self.find_note_index_by_id(id) {
+                        let after = self.state.notes[idx];
+                        if before != after {
+                            self.emit_note_updated(before, after);
+                        }
+                    }
+                }
+            }
+        }
+        self.lane_edit_changed = false;
+    }
+
     fn notify_selection_changed(&mut self, previous: BTreeSet<NoteId>) {
         if previous != self.selected_notes {
             self.emit_event(EditorEvent::SelectionChanged(
@@ -525,7 +619,78 @@ impl MidiEditor {
                 ui.set_min_height(total_height);
                 self.ui_toolbar(ui);
                 ui.separator();
-                self.ui_piano_roll(ui);
+                
+                // Allocate space for piano roll and curve lanes with draggable splitter
+                // Account for bottom status bar (typically 25-30 pixels)
+                let status_bar_height = 25.0;
+                let available_height_raw = ui.available_height();
+                let remaining_height = (available_height_raw - status_bar_height).max(0.0);
+                let min_piano_height = 200.0;
+                let min_curve_height = 80.0;
+                
+                // Calculate heights based on splitter ratio
+                let piano_roll_height = if self.curve_lane_visible {
+                    (remaining_height * self.splitter_ratio).max(min_piano_height).min(remaining_height)
+                } else {
+                    remaining_height
+                };
+                let curve_height = if self.curve_lane_visible {
+                    (remaining_height - piano_roll_height).max(0.0)
+                } else {
+                    0.0
+                };
+                
+                // Piano roll area
+                let piano_rect = ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), piano_roll_height),
+                    Layout::top_down(Align::LEFT),
+                    |ui| {
+                        self.ui_piano_roll(ui);
+                    }
+                ).response.rect;
+                
+                // Draggable splitter (only if curve editor is visible)
+                if self.curve_lane_visible {
+                    let splitter_height = 4.0;
+                    let splitter_rect = Rect::from_min_size(
+                        Pos2::new(piano_rect.min.x, piano_rect.max.y),
+                        Vec2::new(piano_rect.width(), splitter_height)
+                    );
+                    
+                    let splitter_response = ui.allocate_rect(splitter_rect, Sense::click_and_drag());
+                    let painter = ui.painter_at(splitter_rect);
+                    
+                    // Draw splitter
+                    painter.rect_filled(splitter_rect, 0.0, Color32::from_rgb(100, 100, 100));
+                    painter.rect_stroke(splitter_rect, 0.0, Stroke::new(1.0, Color32::from_rgb(150, 150, 150)));
+                    
+                    // Handle dragging
+                    if splitter_response.drag_started() {
+                        self.dragging_splitter = true;
+                    }
+                    if self.dragging_splitter {
+                        if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                            let new_ratio = ((pointer.y - piano_rect.min.y) / remaining_height)
+                                .clamp(min_piano_height / remaining_height, 1.0 - min_curve_height / remaining_height);
+                            self.splitter_ratio = new_ratio;
+                        }
+                        if ui.input(|i| i.pointer.any_released()) {
+                            self.dragging_splitter = false;
+                        }
+                        ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+                    } else if splitter_response.hovered() {
+                        ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+                    }
+                    
+                    // Curve lanes area
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), curve_height),
+                        Layout::top_down(Align::LEFT),
+                        |ui| {
+                            self.ui_curve_lanes(ui);
+                        }
+                    );
+                }
             });
             ui.separator();
             self.ui_inspector(ui, total_height);
@@ -593,7 +758,8 @@ impl MidiEditor {
                 };
 
                 if should_trigger_start {
-                    playback.note_on(note.key, note.velocity);
+                    let velocity = self.state.apply_velocity_curve_to_note(note);
+                    playback.note_on(note.key, velocity);
                 }
 
                 // Check for Note Off: end lies between last_tick and current_tick
@@ -1598,6 +1764,104 @@ impl MidiEditor {
         self.sort_notes();
     }
 
+    #[allow(dead_code)]
+    fn note_near_tick(&self, tick: u64) -> Option<Note> {
+        self.state.notes.iter().copied().min_by_key(|note| {
+            if tick >= note.start && tick <= note.start + note.duration {
+                0
+            } else if tick < note.start {
+                (note.start - tick) as u64
+            } else {
+                (tick - (note.start + note.duration)) as u64
+            }
+        })
+    }
+
+    #[allow(dead_code)]
+    fn begin_lane_edit(&mut self, lane: LaneType, targets: Vec<NoteId>, anchor: NoteId) {
+        let mut uniques = BTreeSet::new();
+        let mut originals = Vec::new();
+        for id in targets {
+            if uniques.insert(id) {
+                if let Some(idx) = self.find_note_index_by_id(id) {
+                    originals.push((id, self.state.notes[idx]));
+                }
+            }
+        }
+        if originals.is_empty() {
+            return;
+        }
+        self.push_undo_snapshot();
+        self.lane_edit_state = Some(LaneEditState {
+            lane,
+            anchor,
+            originals,
+        });
+        self.lane_edit_changed = false;
+    }
+
+    #[allow(dead_code)]
+    fn apply_lane_velocity(&mut self, value: u8, relative: bool) {
+        let originals = self.lane_edit_state.as_ref().map(|s| s.originals.clone());
+        if let Some(state) = &self.lane_edit_state {
+            let anchor_original = state
+                .originals
+                .iter()
+                .find(|(id, _)| *id == state.anchor)
+                .map(|(_, note)| *note);
+            if let Some(anchor) = anchor_original {
+                let delta = value as i32 - anchor.velocity as i32;
+                if let Some(originals) = originals {
+                    for (id, original) in &originals {
+                        if let Some(note) = self.note_mut_by_id(*id) {
+                            let mut new_velocity = if relative {
+                                (original.velocity as i32 + delta).clamp(1, 127) as u8
+                            } else {
+                                value
+                            };
+                            new_velocity = new_velocity.clamp(1, 127);
+                            if note.velocity != new_velocity {
+                                note.velocity = new_velocity;
+                                self.lane_edit_changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    fn apply_lane_pitch(&mut self, value: u8, relative: bool) {
+        let originals = self.lane_edit_state.as_ref().map(|s| s.originals.clone());
+        if let Some(state) = &self.lane_edit_state {
+            let anchor_original = state
+                .originals
+                .iter()
+                .find(|(id, _)| *id == state.anchor)
+                .map(|(_, note)| *note);
+            if let Some(anchor) = anchor_original {
+                let delta = value as i32 - anchor.key as i32;
+                if let Some(originals) = originals {
+                    for (id, original) in &originals {
+                        if let Some(note) = self.note_mut_by_id(*id) {
+                            let mut new_key = if relative {
+                                (original.key as i32 + delta).clamp(0, 127) as u8
+                            } else {
+                                value
+                            };
+                            new_key = new_key.clamp(0, 127);
+                            if note.key != new_key {
+                                note.key = new_key;
+                                self.lane_edit_changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn current_tick_position(&self) -> u64 {
         if self.state.ticks_per_beat == 0 {
             return 0;
@@ -1919,5 +2183,291 @@ impl MidiEditor {
             }
             _ => self.snap_value(raw_tick).max(0) as u64,
         }
+    }
+
+    fn ui_curve_lanes(&mut self, ui: &mut Ui) {
+        // Find velocity curve lane ID and clone data
+        let velocity_lane_id = self.state.curves.iter()
+            .find(|c| c.lane_type == CurveLaneType::Velocity)
+            .map(|c| c.id);
+        
+            if let Some(lane_id) = velocity_lane_id {
+                let key_width = 60.0; // Same as piano roll (for grid alignment calculation)
+                let tpb = self.state.ticks_per_beat.max(1) as u64;
+                let manual_scroll_x = self.manual_scroll_x;
+                let zoom_x = self.zoom_x;
+                let available_height = ui.available_height();
+                
+                // Clone points and lane info for rendering
+                let points_clone: Vec<_> = self.state.curves.iter()
+                    .find(|c| c.id == lane_id)
+                    .map(|c| c.points.clone())
+                    .unwrap_or_default();
+                let (min_val, max_val) = CurveLaneType::Velocity.value_range();
+                let value_range = max_val - min_val;
+                let dragging = self.dragging_curve_point;
+                
+                let mut point_to_delete: Option<CurvePointId> = None;
+                let mut point_to_start_drag: Option<CurvePointId> = None;
+                let mut new_point: Option<(u64, f32)> = None;
+                
+                // Curve editing area - full width, extends to window edges
+                ui.push_id("curve_editor_scroll", |ui| {
+                    ScrollArea::horizontal()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                        let available_width = ui.available_width();
+                        let (rect, response) = ui.allocate_exact_size(
+                            Vec2::new(available_width.max(400.0), available_height),
+                            Sense::click_and_drag()
+                        );
+                        
+                        let painter = ui.painter_at(rect);
+                        
+                        // Draw background
+                        painter.rect_filled(rect, 0.0, Color32::from_rgb(40, 40, 40));
+                        
+                        // Draw grid lines using EXACT same logic as piano roll
+                        // To align grids, we need to calculate note_offset_x the same way as piano roll
+                        // Piano roll: note_offset_x = rect.min.x + key_width + manual_scroll_x
+                        // But piano roll's rect.min.x includes the key area, while our rect.min.x is at window edge
+                        // So we need to offset by key_width to align: rect.min.x + key_width + manual_scroll_x
+                        // This ensures grid lines align perfectly even though curve editor extends to edges
+                        let note_offset_x = rect.min.x + key_width + manual_scroll_x;
+                        
+                        let denom = self.state.time_signature.1.max(1) as u64;
+                        let numer = self.state.time_signature.0.max(1) as u64;
+                        let ticks_per_measure = (tpb * numer * 4).saturating_div(denom).max(tpb);
+                        
+                        // Calculate visible range - allow showing tick 0 even if it's slightly to the left
+                        let visible_beats_start = (-manual_scroll_x / zoom_x).floor();
+                        let visible_beats_end = visible_beats_start + (rect.width() / zoom_x) + 2.0;
+                        // Allow rendering from tick 0 even if it's slightly outside visible range
+                        let render_start_beats = visible_beats_start.min(0.0);
+                        let mut start_tick = (render_start_beats * tpb as f32).floor() as i64;
+                        if start_tick < 0 {
+                            start_tick = 0;
+                        }
+                        let end_tick = (visible_beats_end * tpb as f32).ceil() as i64;
+                        
+                        let subdivision = if zoom_x >= 220.0 {
+                            8
+                        } else if zoom_x >= 90.0 {
+                            4
+                        } else if zoom_x >= 45.0 {
+                            2
+                        } else {
+                            1
+                        };
+                        let tick_step = (tpb / subdivision).max(1);
+                        
+                        let mut tick = (start_tick / tick_step as i64) * tick_step as i64;
+                        if tick < 0 {
+                            tick = 0;
+                        }
+                        
+                        let grid_top = rect.min.y;
+                        let grid_bottom = rect.max.y;
+                        
+                        let measure_line_color = Color32::from_rgb(210, 210, 210);
+                        let beat_line_color = Color32::from_rgb(140, 140, 140);
+                        let subdivision_color = Color32::from_rgb(90, 90, 90);
+                        
+                        // Allow rendering slightly to the left to show tick 0 grid line
+                        let render_left_bound = rect.min.x - 10.0;
+                        while tick <= end_tick {
+                            let x = note_offset_x + (tick as f32 / tpb as f32) * zoom_x;
+                            if x >= render_left_bound && x <= rect.max.x {
+                                if tick as u64 % ticks_per_measure == 0 {
+                                    painter.line_segment(
+                                        [Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)],
+                                        Stroke::new(1.0, measure_line_color),
+                                    );
+                                } else if tick as u64 % tpb == 0 {
+                                    painter.line_segment(
+                                        [Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)],
+                                        Stroke::new(1.0, beat_line_color),
+                                    );
+                                } else {
+                                    Self::draw_dashed_vertical_line(
+                                        &painter,
+                                        x,
+                                        grid_top,
+                                        grid_bottom,
+                                        Stroke::new(1.0, subdivision_color),
+                                    );
+                                }
+                            }
+                            tick += tick_step as i64;
+                        }
+                        
+                        // Draw horizontal grid (value lines)
+                        for i in 0..=4 {
+                            let y = rect.min.y + (rect.height() / 4.0) * i as f32;
+                            painter.line_segment(
+                                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
+                                Stroke::new(1.0, Color32::from_rgb(50, 50, 50)),
+                            );
+                        }
+                        
+                        // Draw curve line
+                        if points_clone.len() >= 2 {
+                            let mut points_vec = Vec::new();
+                            for point in &points_clone {
+                                let x = note_offset_x + (point.tick as f32 / tpb as f32) * zoom_x;
+                                let normalized_value = (point.value - min_val) / value_range;
+                                let y = rect.max.y - normalized_value * rect.height();
+                                if x >= rect.min.x - 10.0 && x <= rect.max.x + 10.0 {
+                                    points_vec.push(Pos2::new(x, y));
+                                }
+                            }
+                            if points_vec.len() >= 2 {
+                                for i in 0..points_vec.len() - 1 {
+                                    painter.line_segment(
+                                        [points_vec[i], points_vec[i + 1]],
+                                        Stroke::new(2.0, Color32::from_rgb(100, 200, 100)),
+                                    );
+                                }
+                            }
+                        }
+                        
+                        // Draw curve points and handle interactions
+                        for point in &points_clone {
+                            let x = note_offset_x + (point.tick as f32 / tpb as f32) * zoom_x;
+                            let normalized_value = (point.value - min_val) / value_range;
+                            let y = rect.max.y - normalized_value * rect.height();
+                            
+                            if x >= rect.min.x - 5.0 && x <= rect.max.x + 5.0 {
+                                let point_pos = Pos2::new(x, y);
+                                let point_rect = Rect::from_center_size(point_pos, Vec2::new(8.0, 8.0));
+                                painter.circle_filled(point_pos, 4.0, Color32::from_rgb(150, 250, 150));
+                                painter.circle_stroke(point_pos, 4.0, Stroke::new(1.0, Color32::WHITE));
+                                
+                                // Handle point interactions
+                                if response.clicked_by(PointerButton::Primary) {
+                                    if let Some(pointer) = response.interact_pointer_pos() {
+                                        if point_rect.contains(pointer) {
+                                            point_to_start_drag = Some(point.id);
+                                        }
+                                    }
+                                }
+                                
+                                if response.clicked_by(PointerButton::Secondary) {
+                                    if let Some(pointer) = response.interact_pointer_pos() {
+                                        if point_rect.contains(pointer) && points_clone.len() > 1 {
+                                            point_to_delete = Some(point.id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Handle dragging
+                        if let Some((drag_lane_id, drag_point_id)) = dragging {
+                            if drag_lane_id == lane_id && ui.input(|i| i.pointer.primary_down()) {
+                                if let Some(pointer) = response.interact_pointer_pos() {
+                                    // Convert pointer position to tick
+                                    // note_offset_x = rect.min.x + key_width + manual_scroll_x
+                                    // So: pointer.x - note_offset_x = pointer.x - rect.min.x - key_width - manual_scroll_x
+                                    // This gives us the position relative to tick 0
+                                    let rel_x = pointer.x - note_offset_x;
+                                    let beats = rel_x / zoom_x;
+                                    let tick = (beats * tpb as f32).round() as i64;
+                                    // Only allow dragging to tick >= 0
+                                    if tick >= 0 {
+                                        let disable_snap = ui.input(|i| i.modifiers.alt);
+                                        let snapped_tick = if disable_snap {
+                                            tick as u64
+                                        } else {
+                                            self.snap_value(tick).max(0) as u64
+                                        };
+                                        
+                                        let rel_y = pointer.y - rect.min.y;
+                                        let normalized_value = 1.0 - (rel_y / rect.height());
+                                        let value = min_val + normalized_value * value_range;
+                                        
+                                        if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == drag_lane_id) {
+                                            lane.update_point(drag_point_id, snapped_tick, value);
+                                            self.emit_event(EditorEvent::CurvePointUpdated {
+                                                lane_id: drag_lane_id,
+                                                point_id: drag_point_id,
+                                            });
+                                        }
+                                    }
+                                }
+                            } else {
+                                self.dragging_curve_point = None;
+                            }
+                        }
+                        
+                        // Handle adding new point
+                        if response.clicked_by(PointerButton::Primary) && dragging.is_none() && point_to_start_drag.is_none() {
+                            if let Some(pointer) = response.interact_pointer_pos() {
+                                if rect.contains(pointer) {
+                                    // Convert pointer position to tick
+                                    // note_offset_x = rect.min.x + key_width + manual_scroll_x
+                                    let rel_x = pointer.x - note_offset_x;
+                                    let beats = rel_x / zoom_x;
+                                    let tick = (beats * tpb as f32).round() as i64;
+                                    // Only allow adding points at tick >= 0
+                                    if tick >= 0 {
+                                        let disable_snap = ui.input(|i| i.modifiers.alt);
+                                        let snapped_tick = if disable_snap {
+                                            tick as u64
+                                        } else {
+                                            self.snap_value(tick).max(0) as u64
+                                        };
+                                        
+                                        let rel_y = pointer.y - rect.min.y;
+                                        let normalized_value = 1.0 - (rel_y / rect.height());
+                                        let value = min_val + normalized_value * value_range;
+                                        
+                                        // Check if clicking near existing point
+                                        let near_existing = points_clone.iter().any(|p| {
+                                            let px = note_offset_x + (p.tick as f32 / tpb as f32) * zoom_x;
+                                            let py = rect.max.y - ((p.value - min_val) / value_range) * rect.height();
+                                            (pointer.x - px).abs() < 10.0 && (pointer.y - py).abs() < 10.0
+                                        });
+                                        
+                                        if !near_existing {
+                                            new_point = Some((snapped_tick, value));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }); // Close push_id
+                
+                // Handle deletions and additions outside the closure
+                if let Some(point_id) = point_to_delete {
+                    self.push_undo_snapshot();
+                    if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                        lane.remove_point(point_id);
+                        self.emit_event(EditorEvent::CurvePointRemoved {
+                            lane_id,
+                            point_id,
+                        });
+                    }
+                }
+                
+                if let Some((tick, value)) = new_point {
+                    self.push_undo_snapshot();
+                    if let Some(lane) = self.state.curves.iter_mut().find(|c| c.id == lane_id) {
+                        let point = lane.insert_point(tick, value);
+                        self.emit_event(EditorEvent::CurvePointAdded {
+                            lane_id,
+                            point_id: point.id,
+                        });
+                    }
+                }
+                
+                if let Some(point_id) = point_to_start_drag {
+                    self.push_undo_snapshot();
+                    self.dragging_curve_point = Some((lane_id, point_id));
+                }
+            } else {
+                ui.label("No velocity curve lane found");
+            }
     }
 }

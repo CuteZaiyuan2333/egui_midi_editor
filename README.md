@@ -13,15 +13,84 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
 
 ## 🎵 Features
 
+### 核心编辑功能
 - **Visual MIDI Editor**: Intuitive piano roll interface for editing *one track at a time*
-- **Inspector & Clipboard**: Multi-select, copy/cut/paste, per-note editing, and quantize-to-snap grid actions
-- **Undo / Redo Stack**: History snapshots for every editing action, plus keyboard shortcuts
-- **Real-time Audio Playback**: Built-in audio engine with ADSR synthesis, pitch-shift preview, and pluggable backends
+  - 音符创建、选择、拖拽移动
+  - 音符长度调整（拖拽右边缘）
+  - 多选支持（Ctrl/Cmd + 点击，Shift + 点击扩展选择）
+  - 框选（拖拽选择区域）
+  - 吸附到网格（可配置吸附间隔和模式）
+  
+- **Inspector & Clipboard**: 
+  - 多选音符的属性编辑（音高、力度、开始时间、持续时间）
+  - 复制/剪切/粘贴（Ctrl/Cmd + C/X/V）
+  - 删除选中音符（Delete/Backspace）
+  - 量化到网格（Quantize to snap grid）
+  
+- **Undo / Redo Stack**: 
+  - 完整的撤销/重做系统，记录所有编辑操作
+  - 键盘快捷键：Ctrl/Cmd + Z（撤销），Ctrl/Cmd + Shift + Z 或 Ctrl/Cmd + Y（重做）
+
+### 曲线编辑功能
+- **Velocity Curve（力度曲线）**:
+  - 可视化力度曲线编辑
+  - 添加、编辑、删除曲线点
+  - 线性插值计算力度值
+  - 曲线值范围：0-127
+  - 导出MIDI时自动应用曲线到音符力度
+  
+- **Pitch Curve（音高曲线）**:
+  - 音高偏移曲线编辑（支持半音偏移）
+  - 曲线值范围：-12 到 +12 半音
+  - 与力度曲线相同的编辑功能
+  
+- **曲线编辑器界面**:
+  - 可调整的分割器（Splitter）调整钢琴卷帘和曲线编辑器的高度比例
+  - 曲线通道的启用/禁用切换
+  - 实时预览曲线效果
+
+### 音频播放功能
+- **Real-time Audio Playback**: 
+  - 内置音频引擎，支持实时预览
+  - ADSR包络合成（Attack, Decay, Sustain, Release）
+  - 音高偏移预览（Pitch Shift Preview）
+  - 音量控制
+  - 可插拔的音频后端接口（`PlaybackBackend`），支持集成到DAW的音频系统
+
+### 传输控制
+- **Transport Controls**: 
+  - 播放/暂停（Space键或程序控制）
+  - BPM控制（可设置和实时调整）
+  - 时间轴定位（Seek）
+  - 循环播放支持（Loop regions，可配置开始和结束位置）
+  - 时间签名设置（Time Signature）
+
+### 文件I/O
+- **Strict Single-Track I/O**: 
+  - MIDI文件导入/导出（使用midly库）
+  - 单轨验证（`from_smf_strict` 确保单轨单通道）
+  - `.aquamidi` 项目格式支持（示例应用）
+  - 标准`.mid`文件导出
+
+### 开发者API
+- **Developer-Friendly API**: 
+  - 事件/命令总线系统（`EditorEvent` / `EditorCommand`）
+  - 严格验证辅助函数
+  - 播放观察者接口（`PlaybackObserver`）
+  - 可自定义选项（`MidiEditorOptions`）
+  - 事件监听器（`set_event_listener`）
+
+### 其他特性
 - **Cross-platform**: Works on Windows, macOS, and Linux
 - **Modular Architecture**: Clean separation between UI, audio, and MIDI processing
-- **Transport Controls**: Play/Pause/Stop with BPM control (loop regions planned)
-- **Strict Single-Track I/O**: Helpers for validating/serializing single-track SMF payloads using midly
-- **Developer-Friendly API**: Event/command bus, strict validation helpers, playback observers, and customizable options
+- **Keyboard Shortcuts**: 
+  - `Space`: 播放/暂停
+  - `Ctrl/Cmd + C`: 复制
+  - `Ctrl/Cmd + X`: 剪切
+  - `Ctrl/Cmd + V`: 粘贴
+  - `Ctrl/Cmd + Z`: 撤销
+  - `Ctrl/Cmd + Shift + Z` 或 `Ctrl/Cmd + Y`: 重做
+  - `Delete` / `Backspace`: 删除选中音符
 
 ## 🏗️ Architecture
 
@@ -172,12 +241,84 @@ impl PlaybackBackend for DawAudioBackend {
 - **Events & Commands**: Subscribe via `set_event_listener` to react to user edits, and use `apply_command` to drive transport/selection from your host
 - **Embedding Checklist**: See [docs/embedding.md](docs/embedding.md) for a step-by-step guide
 
+## 📝 已实现功能详细列表
+
+### 音符编辑
+- ✅ 点击空白区域创建新音符
+- ✅ 点击音符进行选择
+- ✅ 拖拽音符移动位置
+- ✅ 拖拽音符右边缘调整长度
+- ✅ Ctrl/Cmd + 点击：切换选择
+- ✅ Shift + 点击：扩展选择
+- ✅ 拖拽框选多个音符
+- ✅ 吸附到网格（Snap to grid）
+- ✅ 吸附模式：绝对模式（Absolute）和相对模式（Relative）
+
+### 剪贴板操作
+- ✅ 复制选中音符（Ctrl/Cmd + C）
+- ✅ 剪切选中音符（Ctrl/Cmd + X）
+- ✅ 粘贴音符（Ctrl/Cmd + V）
+- ✅ 删除选中音符（Delete/Backspace）
+
+### 撤销/重做
+- ✅ 完整的操作历史记录
+- ✅ 撤销（Ctrl/Cmd + Z）
+- ✅ 重做（Ctrl/Cmd + Shift + Z 或 Ctrl/Cmd + Y）
+
+### 检查器面板
+- ✅ 显示选中音符的属性
+- ✅ 编辑音高（Key）
+- ✅ 编辑力度（Velocity）
+- ✅ 编辑开始时间（Start）
+- ✅ 编辑持续时间（Duration）
+- ✅ 多选时批量编辑
+
+### 曲线编辑
+- ✅ 力度曲线（Velocity Curve）
+  - 添加曲线点（点击曲线区域）
+  - 拖拽曲线点调整位置和值
+  - 删除曲线点（右键点击或Delete键）
+  - 线性插值计算
+  - 导出时自动应用到音符
+- ✅ 音高曲线（Pitch Curve）
+  - 与力度曲线相同的编辑功能
+  - 支持-12到+12半音偏移
+- ✅ 曲线通道管理
+  - 启用/禁用曲线通道
+  - 可调整的分割器调整界面布局
+
+### 音频播放
+- ✅ 实时音频预览
+- ✅ ADSR包络合成
+- ✅ 音量控制
+- ✅ 音高偏移预览
+- ✅ 可插拔音频后端接口
+
+### 传输控制
+- ✅ 播放/暂停（Space键）
+- ✅ BPM设置和调整
+- ✅ 时间签名设置
+- ✅ 时间轴定位（Seek）
+- ✅ 循环播放配置
+
+### 文件操作
+- ✅ 导入MIDI文件（单轨验证）
+- ✅ 导出MIDI文件
+- ✅ `.aquamidi` 项目格式（示例应用）
+- ✅ 标准`.mid`文件导出
+
+### 视图控制
+- ✅ 水平/垂直缩放
+- ✅ 滚动视图
+- ✅ 定位到指定音高
+- ✅ 可调整的曲线编辑器高度
+
 ## ⚠️ Current Limitations
 
-- Strictly single-track & single-channel: validation rejects multi-track or mixed-channel SMFs
-- Loop configuration fields exist but playback looping UI/logic is still experimental
-- Example app can only open/save `.aquamidi` projects (use Export MIDI for `.mid`)
-- Advanced editing features such as humanize, velocity curves, lasso selection, automation, etc. are planned but not implemented
+- **严格单轨限制**: 验证拒绝多轨或混合通道的SMF文件
+- **示例应用限制**: 示例应用只能打开/保存`.aquamidi`项目文件（使用"导出MIDI"功能导出`.mid`文件）
+- **高级编辑功能**: 人性化（Humanize）、套索选择（Lasso selection）等高级功能仍在计划中
+- **多曲线通道**: 目前主要支持力度曲线，音高曲线功能已实现但UI集成可能需要进一步完善
 
 ## 🛠️ Development
 
@@ -225,24 +366,62 @@ We welcome contributions that improve:
 
 ## 📋 Roadmap
 
-### Delivered
-- [x] Single-track piano roll with inspector, clipboard, quantize, undo/redo
-- [x] Strict SMF validation helpers + `.aquamidi` project format + `.mid` export
-- [x] Real-time preview synth with volume/pitch controls
-- [x] Event/command bridge for embedding in host applications
+### 已实现功能 ✅
+- [x] **单轨钢琴卷帘编辑器**
+  - 音符创建、选择、拖拽、调整大小
+  - 多选和框选
+  - 吸附到网格（Snap to grid）
+  
+- [x] **检查器和剪贴板**
+  - 音符属性编辑（音高、力度、时间、持续时间）
+  - 复制/剪切/粘贴
+  - 删除操作
+  
+- [x] **撤销/重做系统**
+  - 完整的操作历史记录
+  - 键盘快捷键支持
+  
+- [x] **曲线编辑功能**
+  - 力度曲线（Velocity Curve）编辑
+  - 音高曲线（Pitch Curve）编辑
+  - 曲线点添加、编辑、删除
+  - 线性插值计算
+  - 可调整的分割器界面
+  
+- [x] **音频播放引擎**
+  - 实时音频预览
+  - ADSR合成
+  - 音量和音高偏移控制
+  - 可插拔音频后端接口
+  
+- [x] **传输控制**
+  - 播放/暂停/停止
+  - BPM控制
+  - 时间轴定位
+  - 循环播放支持
+  
+- [x] **文件I/O**
+  - 严格单轨验证（`from_smf_strict`）
+  - `.aquamidi` 项目格式
+  - 标准`.mid`文件导出
+  
+- [x] **开发者API**
+  - 事件/命令总线系统
+  - 播放观察者接口
+  - 可自定义选项
 
-### Next Up
-- [ ] Loop playback UX plus improved transport feedback
-- [ ] Advanced editing tools: humanize, velocity editing, batch transforms
-- [ ] Performance optimizations for dense arrangements
-- [ ] Better API ergonomics + comprehensive documentation/examples
-- [ ] Demo support for importing `.mid` files directly
+### 计划中功能 🚧
+- [ ] 循环播放UI改进和传输反馈优化
+- [ ] 高级编辑工具：人性化（Humanize）、批量变换
+- [ ] 密集编排的性能优化
+- [ ] 更好的API设计 + 全面的文档和示例
+- [ ] 示例应用支持直接导入`.mid`文件
 
-### Future Considerations
-- [ ] Chord/scale aware editing helpers
-- [ ] Customizable UI themes
-- [ ] Plugin-style extension points for bespoke tooling
-- [ ] Broader export options beyond SMF single-track
+### 未来考虑 💡
+- [ ] 和弦/音阶感知编辑辅助
+- [ ] 可自定义UI主题
+- [ ] 插件式扩展点
+- [ ] 超出SMF单轨的导出选项
 
 **Note**: This project focuses on single-track editing. Multi-track editing, VST support, MIDI device I/O, and sample-based synthesis are **not** planned features, as they are better handled by the host DAW application.
 

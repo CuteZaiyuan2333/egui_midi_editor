@@ -4,6 +4,8 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NOTE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+static CURVE_LANE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+static CURVE_POINT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NoteId(pub u64);
@@ -39,6 +41,146 @@ impl Note {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CurveLaneId(pub u64);
+
+impl CurveLaneId {
+    pub fn next() -> Self {
+        CurveLaneId(CURVE_LANE_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CurvePointId(pub u64);
+
+impl CurvePointId {
+    pub fn next() -> Self {
+        CurvePointId(CURVE_POINT_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurveLaneType {
+    Velocity,
+    Pitch,
+}
+
+impl CurveLaneType {
+    pub fn value_range(&self) -> (f32, f32) {
+        match self {
+            CurveLaneType::Velocity => (0.0, 127.0),
+            CurveLaneType::Pitch => (-12.0, 12.0),
+        }
+    }
+
+    pub fn default_name(&self) -> &'static str {
+        match self {
+            CurveLaneType::Velocity => "Velocity",
+            CurveLaneType::Pitch => "Pitch",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CurvePoint {
+    pub id: CurvePointId,
+    pub tick: u64,
+    pub value: f32,
+}
+
+impl CurvePoint {
+    pub fn new(tick: u64, value: f32) -> Self {
+        Self {
+            id: CurvePointId::next(),
+            tick,
+            value,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CurveLane {
+    pub id: CurveLaneId,
+    pub lane_type: CurveLaneType,
+    pub name: String,
+    pub enabled: bool,
+    pub points: Vec<CurvePoint>,
+}
+
+impl CurveLane {
+    pub fn new(lane_type: CurveLaneType) -> Self {
+        Self {
+            id: CurveLaneId::next(),
+            lane_type,
+            name: lane_type.default_name().to_owned(),
+            enabled: true,
+            points: Vec::new(),
+        }
+    }
+
+    pub fn insert_point(&mut self, tick: u64, value: f32) -> CurvePoint {
+        let mut point = CurvePoint::new(tick, value);
+        self.clamp_point(&mut point);
+        self.points.push(point.clone());
+        self.sort_points();
+        point
+    }
+
+    pub fn update_point(&mut self, point_id: CurvePointId, tick: u64, value: f32) -> Option<()> {
+        if let Some(point) = self.points.iter_mut().find(|p| p.id == point_id) {
+            point.tick = tick;
+            point.value = value;
+            let (min, max) = self.lane_type.value_range();
+            point.value = point.value.clamp(min, max);
+            self.sort_points();
+            return Some(());
+        }
+        None
+    }
+
+    pub fn remove_point(&mut self, point_id: CurvePointId) -> Option<CurvePoint> {
+        if let Some(idx) = self.points.iter().position(|p| p.id == point_id) {
+            return Some(self.points.remove(idx));
+        }
+        None
+    }
+
+    pub fn value_at(&self, tick: u64) -> Option<f32> {
+        if self.points.is_empty() {
+            return None;
+        }
+        if self.points.len() == 1 {
+            return Some(self.points[0].value);
+        }
+        if tick <= self.points[0].tick {
+            return Some(self.points[0].value);
+        }
+        if tick >= self.points.last()?.tick {
+            return Some(self.points.last()?.value);
+        }
+        let mut iter = self.points.iter().peekable();
+        while let Some(current) = iter.next() {
+            if let Some(next) = iter.peek() {
+                if tick >= current.tick && tick <= next.tick {
+                    let span = (next.tick - current.tick).max(1) as f32;
+                    let alpha = (tick - current.tick) as f32 / span;
+                    return Some(current.value + (next.value - current.value) * alpha);
+                }
+            }
+        }
+        self.points.last().map(|p| p.value)
+    }
+
+    fn clamp_point(&self, point: &mut CurvePoint) {
+        let (min, max) = self.lane_type.value_range();
+        point.value = point.value.clamp(min, max);
+    }
+
+    fn sort_points(&mut self) {
+        self.points.sort_by(|a, b| a.tick.cmp(&b.tick).then_with(|| a.id.0.cmp(&b.id.0)));
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TrackMeta {
     pub channel: u8,
@@ -63,6 +205,7 @@ impl Default for TrackMeta {
 #[derive(Clone, Debug)]
 pub struct MidiState {
     pub notes: Vec<Note>,
+    pub curves: Vec<CurveLane>,
     pub ticks_per_beat: u16,
     pub bpm: f32,
     pub time_signature: (u8, u8),
@@ -73,6 +216,7 @@ impl Default for MidiState {
     fn default() -> Self {
         Self {
             notes: Vec::new(),
+            curves: vec![Self::default_velocity_lane()],
             ticks_per_beat: 480,
             bpm: 120.0,
             time_signature: (4, 4),
@@ -197,10 +341,34 @@ impl MidiState {
 
         Self {
             notes,
+            curves: vec![Self::default_velocity_lane()],
             ticks_per_beat,
             bpm,
             time_signature: time_sig,
             track: track_meta,
+        }
+    }
+
+    fn default_velocity_lane() -> CurveLane {
+        CurveLane::new(CurveLaneType::Velocity)
+    }
+
+    pub fn get_velocity_at(&self, tick: u64) -> Option<u8> {
+        for curve in &self.curves {
+            if curve.lane_type == CurveLaneType::Velocity && curve.enabled {
+                if let Some(value) = curve.value_at(tick) {
+                    return Some(value.clamp(0.0, 127.0) as u8);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn apply_velocity_curve_to_note(&self, note: &Note) -> u8 {
+        if let Some(curve_velocity) = self.get_velocity_at(note.start) {
+            curve_velocity
+        } else {
+            note.velocity
         }
     }
 
@@ -246,13 +414,14 @@ impl MidiState {
         }
         let mut events: Vec<(u64, TrackEventKind<'static>)> = Vec::new();
         for note in &self.notes {
+            let velocity = self.apply_velocity_curve_to_note(note);
             events.push((
                 note.start,
                 TrackEventKind::Midi {
                     channel: self.track.channel.into(),
                     message: MidiMessage::NoteOn {
                         key: note.key.into(),
-                        vel: note.velocity.into(),
+                        vel: velocity.into(),
                     },
                 },
             ));

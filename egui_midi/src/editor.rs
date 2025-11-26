@@ -1,4 +1,4 @@
-use crate::structure::{MidiState, Note, NoteId};
+use crate::structure::{CurveLaneId, CurvePointId, MidiState, Note, NoteId};
 
 /// 宿主可描述的吸附模式
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +39,20 @@ pub enum EditorEvent {
         current_time: f32,
         current_tick: u64,
     },
+    CurveLaneAdded(CurveLaneId),
+    CurveLaneRemoved(CurveLaneId),
+    CurvePointAdded {
+        lane_id: CurveLaneId,
+        point_id: CurvePointId,
+    },
+    CurvePointRemoved {
+        lane_id: CurveLaneId,
+        point_id: CurvePointId,
+    },
+    CurvePointUpdated {
+        lane_id: CurveLaneId,
+        point_id: CurvePointId,
+    },
 }
 
 /// 宿主可推送到编辑器的命令
@@ -64,6 +78,24 @@ pub enum EditorCommand {
         mode: SnapMode,
     },
     OverrideTransport(Option<TransportState>),
+    AddCurvePoint {
+        lane_id: CurveLaneId,
+        tick: u64,
+        value: f32,
+    },
+    UpdateCurvePoint {
+        lane_id: CurveLaneId,
+        point_id: CurvePointId,
+        tick: u64,
+        value: f32,
+    },
+    RemoveCurvePoint {
+        lane_id: CurveLaneId,
+        point_id: CurvePointId,
+    },
+    ToggleCurveLaneEnabled {
+        lane_id: CurveLaneId,
+    },
 }
 
 /// 初始化与运行时的视图配置
