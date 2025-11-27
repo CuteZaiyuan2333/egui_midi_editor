@@ -1,4 +1,4 @@
-use crate::structure::{CurveLaneId, CurvePointId, MidiState, Note, NoteId};
+use crate::structure::{BatchTransformType, CurveLaneId, CurvePointId, MidiState, Note, NoteId};
 
 /// 宿主可描述的吸附模式
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +95,14 @@ pub enum EditorCommand {
     },
     ToggleCurveLaneEnabled {
         lane_id: CurveLaneId,
+    },
+    HumanizeNotes {
+        time_range: u64,
+        velocity_range: u8,
+    },
+    BatchTransform {
+        transform_type: BatchTransformType,
+        value: f64,
     },
 }
 

@@ -69,6 +69,10 @@ impl MyApp {
                     ui.close_menu();
                 }
                 ui.separator();
+                if ui.button("Import MIDI...").clicked() {
+                    self.import_midi_dialog();
+                    ui.close_menu();
+                }
                 if ui.button("Export MIDI...").clicked() {
                     self.export_midi_dialog();
                     ui.close_menu();
@@ -126,6 +130,22 @@ impl MyApp {
                 Ok(_) => {
                     self.current_path = Some(path.clone());
                     self.set_status(format!("Saved {}", path.display()));
+                }
+                Err(err) => self.set_error(err),
+            }
+        }
+    }
+
+    fn import_midi_dialog(&mut self) {
+        if let Some(path) = FileDialog::new()
+            .add_filter("Standard MIDI", &["mid", "midi"])
+            .pick_file()
+        {
+            match import_midi_file(&path) {
+                Ok(state) => {
+                    self.editor.replace_state(state);
+                    self.current_path = None; // Imported MIDI is not a project file
+                    self.set_status(format!("Imported {}", path.display()));
                 }
                 Err(err) => self.set_error(err),
             }
@@ -216,6 +236,12 @@ fn read_aquamidi_file(path: &Path) -> Result<MidiState, String> {
     }
     let smf_bytes = &data[AQUAMIDI_MAGIC.len() + 4..];
     let smf = Smf::parse(smf_bytes).map_err(|err| format!("Failed to parse SMF: {err}"))?;
+    MidiState::from_smf_strict(&smf).map_err(|err| format!("Invalid MIDI data: {err}"))
+}
+
+fn import_midi_file(path: &Path) -> Result<MidiState, String> {
+    let data = fs::read(path).map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
+    let smf = Smf::parse(&data).map_err(|err| format!("Failed to parse MIDI file: {err}"))?;
     MidiState::from_smf_strict(&smf).map_err(|err| format!("Invalid MIDI data: {err}"))
 }
 

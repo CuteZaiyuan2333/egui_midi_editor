@@ -484,6 +484,90 @@ impl MidiState {
         self.validate_single_track()?;
         Ok(self.to_smf())
     }
+
+    /// Helper method to apply a closure to selected notes identified by their IDs
+    fn apply_to_selected_notes<F>(&mut self, note_ids: &[NoteId], mut f: F)
+    where
+        F: FnMut(&mut Note),
+    {
+        use std::collections::HashSet;
+        if note_ids.is_empty() {
+            return;
+        }
+        let id_set: HashSet<NoteId> = note_ids.iter().copied().collect();
+        
+        for note in &mut self.notes {
+            if id_set.contains(&note.id) {
+                f(note);
+            }
+        }
+    }
+
+    /// Humanize selected notes by adding random variations to timing and velocity
+    pub fn humanize_notes(&mut self, note_ids: &[NoteId], time_range: u64, velocity_range: u8) {
+        self.apply_to_selected_notes(note_ids, |note| {
+            // Add random time offset
+            let time_offset = if time_range > 0 {
+                let range = time_range as i64;
+                fastrand::i64(-range..=range)
+            } else {
+                0
+            };
+            note.start = (note.start as i64 + time_offset).max(0) as u64;
+            
+            // Add random velocity offset
+            let velocity_offset = if velocity_range > 0 {
+                let range = velocity_range as i8;
+                fastrand::i8(-range..=range)
+            } else {
+                0
+            };
+            note.velocity = ((note.velocity as i16 + velocity_offset as i16).max(0).min(127)) as u8;
+        });
+        
+        // Re-sort notes after time changes
+        self.notes.sort_by_key(|n| n.start);
+    }
+
+    /// Apply batch transform to selected notes
+    pub fn batch_transform_notes(
+        &mut self,
+        note_ids: &[NoteId],
+        transform_type: BatchTransformType,
+        value: f64,
+    ) {
+        let needs_sort = matches!(transform_type, BatchTransformType::VelocityOffset | BatchTransformType::DurationScale);
+        
+        self.apply_to_selected_notes(note_ids, |note| {
+            match transform_type {
+                BatchTransformType::VelocityOffset => {
+                    let new_velocity = (note.velocity as f64 + value).round() as i16;
+                    note.velocity = new_velocity.max(0).min(127) as u8;
+                }
+                BatchTransformType::DurationScale => {
+                    let new_duration = (note.duration as f64 * value).round() as i64;
+                    note.duration = new_duration.max(1) as u64;
+                }
+                BatchTransformType::PitchOffset => {
+                    let new_key = (note.key as f64 + value).round() as i16;
+                    note.key = new_key.max(0).min(127) as u8;
+                }
+            }
+        });
+        
+        // Only sort if start time or duration might have changed
+        // Pitch changes don't affect sort order
+        if needs_sort {
+            self.notes.sort_by_key(|n| n.start);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchTransformType {
+    VelocityOffset,
+    DurationScale,
+    PitchOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,6 +1,6 @@
 use crate::audio::{PlaybackBackend, PlaybackObserver};
 use crate::editor::{EditorCommand, EditorEvent, MidiEditorOptions, SnapMode, TransportState};
-use crate::structure::{CurveLaneId, CurvePointId, CurveLaneType, MidiState, Note, NoteId};
+use crate::structure::{BatchTransformType, CurveLaneId, CurvePointId, CurveLaneType, MidiState, Note, NoteId};
 use egui::*;
 use midly::Smf;
 use std::collections::BTreeSet;
@@ -37,7 +37,6 @@ pub struct MidiEditor {
     pub playback_observer: Option<Arc<dyn PlaybackObserver>>,
 
     // View state
-    pub scroll: Vec2,
     pub zoom_x: f32,
     pub zoom_y: f32,
     pub manual_scroll_x: f32, // Manual scroll offset
@@ -98,7 +97,19 @@ pub struct MidiEditor {
     pub curve_lane_height: f32,
     pub curve_lane_visible: bool,
     pub dragging_splitter: bool,
+    
+    // Batch transform dialog state
+    pub show_batch_transform_dialog: bool,
+    pub batch_transform_type: crate::structure::BatchTransformType,
+    pub batch_transform_value: f64,
+    
+    // Context menu state
+    pub context_menu_pos: Option<Pos2>,
+    pub context_menu_open_pos: Option<Pos2>, // Track the position where menu was opened
     pub splitter_ratio: f32, // Ratio of piano roll height (0.0-1.0)
+    
+    // Playback settings dialog
+    pub show_playback_settings: bool,
 }
 
 impl MidiEditor {
@@ -128,7 +139,6 @@ impl MidiEditor {
             state,
             playback,
             playback_observer: None,
-            scroll: Vec2::ZERO,
             zoom_x: 100.0,
             zoom_y: 20.0,
             manual_scroll_x: 0.0,
@@ -178,6 +188,12 @@ impl MidiEditor {
             curve_lane_visible: true,
             dragging_splitter: false,
             splitter_ratio: 0.7, // 70% for piano roll, 30% for curve editor
+            show_batch_transform_dialog: false,
+            batch_transform_type: BatchTransformType::VelocityOffset,
+            batch_transform_value: 0.0,
+            context_menu_pos: None,
+            context_menu_open_pos: None,
+            show_playback_settings: false,
         }
     }
 
@@ -188,6 +204,7 @@ impl MidiEditor {
         self.manual_scroll_y = options.manual_scroll_y;
         self.snap_interval = options.snap_interval.max(1);
         self.snap_mode = options.snap_mode;
+        // TODO: Implement swing rhythm feature
         self.swing_ratio = options.swing_ratio.clamp(0.0, 0.75);
         self.volume = options.volume.clamp(0.0, 1.0);
         self.preview_pitch_shift = options.preview_pitch_shift.clamp(-24.0, 24.0);
@@ -312,8 +329,9 @@ impl MidiEditor {
             return;
         }
         self.push_undo_snapshot();
-        let existing = self.state.notes.clone();
-        for note in existing {
+        // Collect notes to emit events before clearing to avoid unnecessary clone
+        let notes_to_delete: Vec<Note> = self.state.notes.iter().copied().collect();
+        for note in notes_to_delete {
             self.emit_note_deleted(note);
         }
         self.state.notes.clear();
@@ -510,6 +528,28 @@ impl MidiEditor {
                     lane.enabled = !lane.enabled;
                 }
             }
+            EditorCommand::HumanizeNotes {
+                time_range,
+                velocity_range,
+            } => {
+                if !self.selected_notes.is_empty() {
+                    self.push_undo_snapshot();
+                    let note_ids: Vec<NoteId> = self.selected_notes.iter().copied().collect();
+                    self.state.humanize_notes(&note_ids, time_range, velocity_range);
+                    self.emit_state_replaced();
+                }
+            }
+            EditorCommand::BatchTransform {
+                transform_type,
+                value,
+            } => {
+                if !self.selected_notes.is_empty() {
+                    self.push_undo_snapshot();
+                    let note_ids: Vec<NoteId> = self.selected_notes.iter().copied().collect();
+                    self.state.batch_transform_notes(&note_ids, transform_type, value);
+                    self.emit_state_replaced();
+                }
+            }
         }
     }
 
@@ -549,7 +589,7 @@ impl MidiEditor {
         if self.drag_changed_note {
             let originals = self.drag_original_notes.clone();
             for (id, before) in originals {
-                if let Some(idx) = self.find_note_index_by_id(id) {
+                if let Some(idx) = self.note_index_by_id(id) {
                     let after = self.state.notes[idx];
                     self.emit_note_updated(before, after);
                 }
@@ -565,7 +605,7 @@ impl MidiEditor {
         if let Some(state) = self.lane_edit_state.take() {
             if self.lane_edit_changed {
                 for (id, before) in state.originals {
-                    if let Some(idx) = self.find_note_index_by_id(id) {
+                    if let Some(idx) = self.note_index_by_id(id) {
                         let after = self.state.notes[idx];
                         if before != after {
                             self.emit_note_updated(before, after);
@@ -732,6 +772,303 @@ impl MidiEditor {
         }
 
         self.handle_shortcuts(ui.ctx());
+        
+        // Context menu for piano roll
+        if let Some(menu_pos) = self.context_menu_pos {
+            let menu_response = egui::Area::new(egui::Id::new("piano_roll_context_menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        let has_selection = !self.selected_notes.is_empty();
+                        
+                        // Set minimum width for all buttons to ensure consistent width
+                        ui.set_min_width(200.0);
+                        
+                        // Quantize to snap grid
+                        if ui.add_enabled(has_selection && self.snap_interval > 0, egui::Button::new("Quantize to snap grid")
+                            .min_size(egui::Vec2::new(200.0, 0.0))).clicked() {
+                            self.quantize_selected_notes();
+                            self.context_menu_pos = None;
+                            self.context_menu_open_pos = None;
+                        }
+                        
+                        ui.separator();
+                        
+                        // Snap Mode and Snap Interval buttons side by side
+                        ui.horizontal(|ui| {
+                            // Snap Mode submenu (adaptive width)
+                            ui.menu_button("Snap Mode", |ui| {
+                                if ui.selectable_label(self.snap_mode == SnapMode::Absolute, "Absolute").clicked() {
+                                    self.apply_command(EditorCommand::SetSnap {
+                                        interval: self.snap_interval,
+                                        mode: SnapMode::Absolute,
+                                    });
+                                    self.context_menu_pos = None;
+                                    self.context_menu_open_pos = None;
+                                }
+                                if ui.selectable_label(self.snap_mode == SnapMode::Relative, "Relative").clicked() {
+                                    self.apply_command(EditorCommand::SetSnap {
+                                        interval: self.snap_interval,
+                                        mode: SnapMode::Relative,
+                                    });
+                                    self.context_menu_pos = None;
+                                    self.context_menu_open_pos = None;
+                                }
+                            });
+                            
+                            // Snap Interval submenu (adaptive width)
+                            ui.menu_button("Snap Interval", |ui| {
+                                let intervals = vec![
+                                    (480 * 4, "1/1"),
+                                    (480 * 2, "1/2"),
+                                    (480, "1/4"),
+                                    (240, "1/8"),
+                                    (120, "1/16"),
+                                    (0, "Free"),
+                                ];
+                                
+                                for (interval, label) in intervals {
+                                    let is_selected = self.snap_interval == interval;
+                                    if ui.selectable_label(is_selected, label).clicked() {
+                                        self.apply_command(EditorCommand::SetSnap {
+                                            interval: interval.max(1),
+                                            mode: self.snap_mode,
+                                        });
+                                        self.context_menu_pos = None;
+                                        self.context_menu_open_pos = None;
+                                    }
+                                }
+                            });
+                        });
+                        
+                        ui.separator();
+                        
+                        // Humanize
+                        if ui.add_enabled(has_selection, egui::Button::new("Humanize")
+                            .min_size(egui::Vec2::new(200.0, 0.0))).clicked() {
+                            let time_range = (self.snap_interval / 12).max(1).min(20);
+                            let velocity_range = 5;
+                            self.apply_command(EditorCommand::HumanizeNotes {
+                                time_range,
+                                velocity_range,
+                            });
+                            self.context_menu_pos = None;
+                            self.context_menu_open_pos = None;
+                        }
+                        
+                        // Batch Transform
+                        if ui.add_enabled(has_selection, egui::Button::new("Batch Transform...")
+                            .min_size(egui::Vec2::new(200.0, 0.0))).clicked() {
+                            self.show_batch_transform_dialog = true;
+                            self.context_menu_pos = None;
+                            self.context_menu_open_pos = None;
+                        }
+                    });
+                });
+            
+            // Close menu if user clicks elsewhere
+            // Logic: if click is NOT in the menu rect, close the menu
+            // Valid buttons (Quantize, Humanize, Batch Transform) already set context_menu_pos = None
+            // Submenu buttons (Snap Mode, Snap Interval) don't close the menu (egui handles this)
+            let ctx = ui.ctx();
+            if ctx.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
+                if let Some(click_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    // Get the actual menu rect from the Area response
+                    let menu_rect = menu_response.response.rect;
+                    
+                    // Ignore the click that opened the menu (same position within a small threshold)
+                    let ignore_click = if let Some(open_pos) = self.context_menu_open_pos {
+                        let threshold = 5.0; // pixels
+                        click_pos.distance(open_pos) < threshold
+                    } else {
+                        false
+                    };
+                    
+                    // Simple logic: if click is NOT in menu rect, close menu
+                    // Submenus (menu_button popups) are handled by egui automatically
+                    // If user clicks outside the main menu, close it
+                    if !ignore_click && !menu_rect.contains(click_pos) {
+                        self.context_menu_pos = None;
+                        self.context_menu_open_pos = None;
+                    }
+                    // If click is inside menu_rect, don't close (menu item click will handle it)
+                } else {
+                    // Can't determine click position, close menu to be safe
+                    self.context_menu_pos = None;
+                    self.context_menu_open_pos = None;
+                }
+            }
+        }
+        
+        // Playback settings dialog
+        if self.show_playback_settings {
+            egui::Window::new("Playback Settings")
+                .collapsible(false)
+                .resizable(true)
+                .show(ui.ctx(), |ui| {
+                    ui.set_min_width(300.0);
+                    
+                    ui.label("Volume:");
+                    let mut volume = self.volume;
+                    if ui
+                        .add(
+                            Slider::new(&mut volume, 0.0..=1.0)
+                                .text("%")
+                                .custom_formatter(|n, _| format!("{:.0}%", n * 200.0)),
+                        )
+                        .changed()
+                    {
+                        self.set_volume(volume);
+                    } else {
+                        self.volume = volume;
+                    }
+
+                    ui.separator();
+                    ui.label("Pitch:");
+                    let mut pitch = self.preview_pitch_shift;
+                    if ui
+                        .add(Slider::new(&mut pitch, -12.0..=12.0).text("± semitone"))
+                        .changed()
+                    {
+                        self.preview_pitch_shift = pitch;
+                        if let Some(playback) = &self.playback {
+                            playback.set_pitch_shift(pitch);
+                        }
+                    }
+
+                    ui.separator();
+                    ui.checkbox(&mut self.loop_enabled, "Loop");
+                    if self.loop_enabled {
+                        ui.horizontal(|ui| {
+                            ui.label("Start:");
+                            let mut loop_start = self.loop_start_tick as i64;
+                            if ui
+                                .add(DragValue::new(&mut loop_start).speed(1.0))
+                                .changed()
+                            {
+                                self.loop_start_tick = loop_start.max(0) as u64;
+                                if self.loop_start_tick >= self.loop_end_tick {
+                                    self.loop_end_tick = self.loop_start_tick + 1;
+                                }
+                            }
+                            ui.label("End:");
+                            let mut loop_end = self.loop_end_tick as i64;
+                            if ui
+                                .add(DragValue::new(&mut loop_end).speed(1.0))
+                                .changed()
+                            {
+                                self.loop_end_tick = loop_end.max((self.loop_start_tick + 1) as i64) as u64;
+                            }
+                        });
+                    }
+
+                    ui.separator();
+                    ui.label("Snap Interval:");
+                    let mut snap = self.snap_interval;
+                    let snap_label = if snap == 0 {
+                        "Free".to_owned()
+                    } else {
+                        format!("1/{}", (480 * 4 / snap).max(1))
+                    };
+                    ComboBox::from_id_salt("snap_combo_dialog")
+                        .selected_text(snap_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut snap, 480 * 4, "1/1");
+                            ui.selectable_value(&mut snap, 480 * 2, "1/2");
+                            ui.selectable_value(&mut snap, 480, "1/4");
+                            ui.selectable_value(&mut snap, 240, "1/8");
+                            ui.selectable_value(&mut snap, 120, "1/16");
+                            ui.selectable_value(&mut snap, 0, "Free");
+                        });
+                    if snap != self.snap_interval {
+                        self.set_snap_interval(snap);
+                    }
+
+                    ui.separator();
+                    ui.label("Snap Mode:");
+                    ComboBox::from_id_salt("snap_mode_dialog")
+                        .selected_text(match self.snap_mode {
+                            SnapMode::Absolute => "Absolute",
+                            SnapMode::Relative => "Relative",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.snap_mode, SnapMode::Absolute, "Absolute");
+                            ui.selectable_value(&mut self.snap_mode, SnapMode::Relative, "Relative");
+                        });
+                    
+                    ui.separator();
+                    if ui.button("Close").clicked() {
+                        self.show_playback_settings = false;
+                    }
+                });
+        }
+        
+        // Batch transform dialog
+        if self.show_batch_transform_dialog {
+            egui::Window::new("Batch Transform")
+                .collapsible(false)
+                .resizable(true)
+                .show(ui.ctx(), |ui| {
+                    ui.vertical(|ui| {
+                        ui.label("Transform Type:");
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(
+                                self.batch_transform_type == BatchTransformType::VelocityOffset,
+                                "Velocity Offset",
+                            ).clicked() {
+                                self.batch_transform_type = BatchTransformType::VelocityOffset;
+                            }
+                            if ui.selectable_label(
+                                self.batch_transform_type == BatchTransformType::DurationScale,
+                                "Duration Scale",
+                            ).clicked() {
+                                self.batch_transform_type = BatchTransformType::DurationScale;
+                            }
+                            if ui.selectable_label(
+                                self.batch_transform_type == BatchTransformType::PitchOffset,
+                                "Pitch Offset",
+                            ).clicked() {
+                                self.batch_transform_type = BatchTransformType::PitchOffset;
+                            }
+                        });
+                        
+                        ui.add_space(10.0);
+                        
+                        match self.batch_transform_type {
+                            BatchTransformType::VelocityOffset => {
+                                ui.label("Velocity offset (-127 to +127):");
+                                ui.add(egui::Slider::new(&mut self.batch_transform_value, -127.0..=127.0));
+                            }
+                            BatchTransformType::DurationScale => {
+                                ui.label("Duration scale factor (0.1 to 10.0):");
+                                ui.add(egui::Slider::new(&mut self.batch_transform_value, 0.1..=10.0));
+                            }
+                            BatchTransformType::PitchOffset => {
+                                ui.label("Pitch offset (semitones, -127 to +127):");
+                                ui.add(egui::Slider::new(&mut self.batch_transform_value, -127.0..=127.0));
+                            }
+                        }
+                        
+                        ui.add_space(10.0);
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("Apply").clicked() {
+                                if !self.selected_notes.is_empty() {
+                                    self.apply_command(EditorCommand::BatchTransform {
+                                        transform_type: self.batch_transform_type,
+                                        value: self.batch_transform_value,
+                                    });
+                                }
+                                self.show_batch_transform_dialog = false;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.show_batch_transform_dialog = false;
+                            }
+                        });
+                    });
+                });
+        }
     }
 
     fn update_sequencer(&mut self) {
@@ -767,6 +1104,34 @@ impl MidiEditor {
                 if end > self.last_tick && end <= current_tick {
                     playback.note_off(note.key);
                 }
+            }
+        }
+
+        // Handle loop playback
+        if self.loop_enabled && self.is_playing {
+            let loop_duration_ticks = self.loop_end_tick.saturating_sub(self.loop_start_tick);
+            if loop_duration_ticks > 0 && current_tick >= self.loop_end_tick {
+                // Jump back to loop start
+                let _loop_duration_seconds = loop_duration_ticks as f32 * seconds_per_tick;
+                self.current_time = self.loop_start_tick as f32 * seconds_per_tick;
+                // Set last_tick to one less than loop_start to ensure notes at loop_start are triggered
+                // If loop_start is 0, we use 0 (which is handled specially in the trigger logic)
+                self.last_tick = self.loop_start_tick.saturating_sub(1);
+                // Stop all notes when looping
+                if let Some(playback) = &self.playback {
+                    playback.all_notes_off();
+                }
+                // Don't update last_tick to current_tick after loop jump, use the value we set above
+                self.emit_transport_event();
+                return;
+            } else if current_tick < self.loop_start_tick {
+                // If somehow before loop start, jump to loop start
+                self.current_time = self.loop_start_tick as f32 * seconds_per_tick;
+                // Same logic as above for ensuring notes at loop_start are triggered
+                self.last_tick = self.loop_start_tick.saturating_sub(1);
+                // Don't update last_tick to current_tick after loop jump, use the value we set above
+                self.emit_transport_event();
+                return;
             }
         }
 
@@ -820,6 +1185,23 @@ impl MidiEditor {
             {
                 self.quantize_selected_notes();
             }
+
+            ui.separator();
+            ui.label("Advanced Tools");
+            ui.horizontal(|ui| {
+                if ui.button("Humanize").clicked() {
+                    // Default: ±10 ticks time, ±5 velocity
+                    let time_range = (self.snap_interval / 12).max(1).min(20);
+                    let velocity_range = 5;
+                    self.apply_command(EditorCommand::HumanizeNotes {
+                        time_range,
+                        velocity_range,
+                    });
+                }
+                if ui.button("Batch Transform...").clicked() {
+                    self.show_batch_transform_dialog = true;
+                }
+            });
 
             if selection_len == 1 {
                 if let Some(note) = self.first_selected_note() {
@@ -900,6 +1282,18 @@ impl MidiEditor {
 
     fn ui_toolbar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            // Time display
+            let seconds_per_beat = 60.0 / self.state.bpm.max(1.0);
+            let seconds_per_tick = seconds_per_beat / self.state.ticks_per_beat.max(1) as f32;
+            let _current_tick = (self.current_time / seconds_per_tick) as u64;
+            let total_seconds = self.current_time;
+            let minutes = (total_seconds / 60.0) as u32;
+            let seconds = (total_seconds % 60.0) as u32;
+            let milliseconds = ((total_seconds % 1.0) * 1000.0) as u32;
+            let time_display = format!("{:02}:{:02}.{:03}", minutes, seconds, milliseconds);
+            ui.label(format!("Time: {}", time_display));
+            ui.separator();
+            
             if ui
                 .button(if self.is_playing {
                     "⏸ Pause"
@@ -947,13 +1341,13 @@ impl MidiEditor {
             ui.separator();
 
             if ui
-                .add_enabled(!self.undo_stack.is_empty(), Button::new("↺ Undo"))
+                .add_enabled(!self.undo_stack.is_empty(), Button::new("↺"))
                 .clicked()
             {
                 self.undo();
             }
             if ui
-                .add_enabled(!self.redo_stack.is_empty(), Button::new("↻ Redo"))
+                .add_enabled(!self.redo_stack.is_empty(), Button::new("↻"))
                 .clicked()
             {
                 self.redo();
@@ -990,66 +1384,8 @@ impl MidiEditor {
 
             ui.separator();
 
-            ui.label("Snap:");
-            let mut snap = self.snap_interval;
-            let snap_label = if snap == 0 {
-                "Free".to_owned()
-            } else {
-                format!("1/{}", (480 * 4 / snap).max(1))
-            };
-            ComboBox::from_id_salt("snap_combo")
-                .selected_text(snap_label)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut snap, 480 * 4, "1/1");
-                    ui.selectable_value(&mut snap, 480 * 2, "1/2");
-                    ui.selectable_value(&mut snap, 480, "1/4");
-                    ui.selectable_value(&mut snap, 240, "1/8");
-                    ui.selectable_value(&mut snap, 120, "1/16");
-                });
-            if snap != self.snap_interval {
-                self.set_snap_interval(snap);
-            }
-            ui.small("Hold ALT to disable snapping");
-
-            ui.separator();
-            ui.label("Snap mode:");
-            ComboBox::from_id_salt("snap_mode")
-                .selected_text(match self.snap_mode {
-                    SnapMode::Absolute => "Absolute",
-                    SnapMode::Relative => "Relative",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.snap_mode, SnapMode::Absolute, "Absolute");
-                    ui.selectable_value(&mut self.snap_mode, SnapMode::Relative, "Relative");
-                });
-
-            ui.separator();
-            ui.label("Volume:");
-            let mut volume = self.volume;
-            if ui
-                .add(
-                    Slider::new(&mut volume, 0.0..=1.0)
-                        .text("%")
-                        .custom_formatter(|n, _| format!("{:.0}%", n * 200.0)),
-                )
-                .changed()
-            {
-                self.set_volume(volume);
-            } else {
-                self.volume = volume;
-            }
-
-            ui.separator();
-            ui.label("Pitch:");
-            let mut pitch = self.preview_pitch_shift;
-            if ui
-                .add(Slider::new(&mut pitch, -12.0..=12.0).text("± semitone"))
-                .changed()
-            {
-                self.preview_pitch_shift = pitch;
-                if let Some(playback) = &self.playback {
-                    playback.set_pitch_shift(pitch);
-                }
+            if ui.button("⚙ Playback Settings").clicked() {
+                self.show_playback_settings = true;
             }
         });
     }
@@ -1326,25 +1662,43 @@ impl MidiEditor {
                     key_val.clamp(0.0, 127.0).round() as u8
                 };
 
-                // Draw Notes
-                let mut note_to_delete: Option<NoteId> = None;
+                // Draw Notes with viewport culling for performance
                 let note_offset_y = rect.min.y + timeline_height + self.manual_scroll_y;
-                let notes_snapshot = self.state.notes.clone();
-
-                for note in &notes_snapshot {
-                    let x = note_offset_x
-                        + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
-                    let y = note_offset_y + note_to_y(note.key, self.zoom_y);
-                    let w =
-                        tick_to_x(note.duration, self.zoom_x, self.state.ticks_per_beat).max(5.0);
-                    let h = self.zoom_y;
-                    let note_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
-
-                    if !note_rect.intersects(rect) {
-                        continue;
-                    }
-
-                    let is_selected = self.selected_notes.contains(&note.id);
+                
+                // Calculate visible time range for culling (notes are sorted by start time)
+                let visible_start_tick = if self.manual_scroll_x < 0.0 {
+                    ((-self.manual_scroll_x / self.zoom_x) * self.state.ticks_per_beat as f32) as u64
+                } else {
+                    0
+                };
+                let visible_end_tick = visible_start_tick.saturating_add(
+                    ((rect.width() / self.zoom_x) * self.state.ticks_per_beat as f32) as u64 + 1
+                );
+                
+                // Use binary search to find notes in visible time range
+                let notes_snapshot = &self.state.notes;
+                let start_idx = notes_snapshot.partition_point(|n| n.start + n.duration < visible_start_tick);
+                let end_idx = notes_snapshot.partition_point(|n| n.start <= visible_end_tick);
+                
+                // Collect note IDs and rects first to avoid borrow conflicts
+                let visible_notes: Vec<(NoteId, Rect)> = notes_snapshot[start_idx..end_idx.min(notes_snapshot.len())]
+                    .iter()
+                    .map(|note| {
+                        let x = note_offset_x
+                            + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
+                        let y = note_offset_y + note_to_y(note.key, self.zoom_y);
+                        let w =
+                            tick_to_x(note.duration, self.zoom_x, self.state.ticks_per_beat).max(5.0);
+                        let h = self.zoom_y;
+                        let note_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
+                        (note.id, note_rect)
+                    })
+                    .filter(|(_, note_rect)| note_rect.intersects(rect))
+                    .collect();
+                
+                // Now draw and handle interactions
+                for (note_id, note_rect) in &visible_notes {
+                    let is_selected = self.selected_notes.contains(note_id);
                     let color = if is_selected {
                         Color32::from_rgb(150, 250, 150)
                     } else {
@@ -1356,12 +1710,15 @@ impl MidiEditor {
                         2.0,
                         Stroke::new(1.0, Color32::WHITE),
                     );
-
+                }
+                
+                // Handle interactions (need to find note by ID)
+                for (note_id, note_rect) in &visible_notes {
                     if response.clicked_by(PointerButton::Primary) {
                         if let Some(pointer) = response.interact_pointer_pos() {
                             if note_rect.contains(pointer) {
                                 let modifiers = ui.input(|i| i.modifiers);
-                                self.handle_note_click(note.id, modifiers);
+                                self.handle_note_click(*note_id, modifiers);
                                 pointer_consumed = true;
                             }
                         }
@@ -1371,17 +1728,17 @@ impl MidiEditor {
                         if let Some(pointer) = response.interact_pointer_pos() {
                             if note_rect.contains(pointer) {
                                 let modifiers = ui.input(|i| i.modifiers);
-                                self.prepare_selection_for_drag(note.id, modifiers);
-                                let action = self.resolve_drag_action(pointer, note_rect);
+                                self.prepare_selection_for_drag(*note_id, modifiers);
+                                let action = self.resolve_drag_action(pointer, *note_rect);
                                 let pointer_tick = pointer_to_tick(pointer);
-                                self.begin_note_drag(note.id, pointer, pointer_tick, action);
+                                self.begin_note_drag(*note_id, pointer, pointer_tick, action);
                                 pointer_consumed = true;
                             }
                         }
                     }
 
                     if let Some(pointer) = response.hover_pos() {
-                        let action = self.resolve_drag_action(pointer, note_rect);
+                        let action = self.resolve_drag_action(pointer, *note_rect);
                         if matches!(action, DragAction::ResizeStart | DragAction::ResizeEnd)
                             && note_rect.contains(pointer)
                         {
@@ -1389,11 +1746,21 @@ impl MidiEditor {
                         }
                     }
 
-                    if ui.input(|i| i.pointer.secondary_pressed()) {
+                    if response.clicked_by(PointerButton::Secondary) {
                         if let Some(pointer) = response.interact_pointer_pos() {
                             if note_rect.contains(pointer) {
-                                note_to_delete = Some(note.id);
-                                pointer_consumed = true;
+                                let modifiers = ui.input(|i| i.modifiers);
+                                if modifiers.shift {
+                                    // Shift+右键：删除音符
+                                    self.push_undo_snapshot();
+                                    self.delete_note_by_id(*note_id);
+                                    pointer_consumed = true;
+                                } else {
+                                    // 普通右键：显示上下文菜单
+                                    self.context_menu_pos = Some(pointer);
+                                    self.context_menu_open_pos = Some(pointer);
+                                    pointer_consumed = true;
+                                }
                             }
                         }
                     }
@@ -1431,15 +1798,22 @@ impl MidiEditor {
                         let in_roll = pointer.x > rect.min.x + key_width
                             && pointer.y > rect.min.y + timeline_height;
                         if in_roll {
-                            if ui.input(|i| i.modifiers.shift) {
-                                self.selection_box_start = Some(pointer);
-                                self.selection_box_end = Some(pointer);
-                            } else if !self.is_dragging_note {
-                                self.create_note_at_pointer(
-                                    pointer,
-                                    &pointer_to_tick,
-                                    &pointer_to_key,
-                                );
+                            let modifiers = ui.input(|i| i.modifiers);
+                            if modifiers.shift {
+                                // Shift+左键：创建新音符
+                                if !self.is_dragging_note {
+                                    self.create_note_at_pointer(
+                                        pointer,
+                                        &pointer_to_tick,
+                                        &pointer_to_key,
+                                    );
+                                }
+                            } else {
+                                // 直接左键：开始框选（如果不在音符上）
+                                if !self.is_dragging_note {
+                                    self.selection_box_start = Some(pointer);
+                                    self.selection_box_end = Some(pointer);
+                                }
                             }
                         }
                     }
@@ -1468,7 +1842,21 @@ impl MidiEditor {
                             } else {
                                 std::mem::take(&mut self.selected_notes)
                             };
-                            for note in &self.state.notes {
+                            // Optimize box selection with viewport culling
+                            let selection_start_tick = if self.manual_scroll_x < 0.0 {
+                                (((selection_rect.min.x - note_offset_x) / self.zoom_x) * self.state.ticks_per_beat as f32) as u64
+                            } else {
+                                0
+                            };
+                            let selection_end_tick = selection_start_tick.saturating_add(
+                                ((selection_rect.width() / self.zoom_x) * self.state.ticks_per_beat as f32) as u64 + 1
+                            );
+                            
+                            let notes_snapshot = &self.state.notes;
+                            let sel_start_idx = notes_snapshot.partition_point(|n| n.start + n.duration < selection_start_tick);
+                            let sel_end_idx = notes_snapshot.partition_point(|n| n.start <= selection_end_tick);
+                            
+                            for note in &notes_snapshot[sel_start_idx..sel_end_idx.min(notes_snapshot.len())] {
                                 let x = note_offset_x
                                     + tick_to_x(note.start, self.zoom_x, self.state.ticks_per_beat);
                                 let y = note_offset_y + note_to_y(note.key, self.zoom_y);
@@ -1492,11 +1880,26 @@ impl MidiEditor {
                     }
                 }
 
-                if let Some(id) = note_to_delete {
-                    self.delete_note_by_id(id);
+                // Handle right-click on piano roll area (not on notes)
+                if !pointer_consumed && response.clicked_by(PointerButton::Secondary) {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        let in_roll = pointer.x > rect.min.x + key_width
+                            && pointer.y > rect.min.y + timeline_height;
+                        if in_roll {
+                            let modifiers = ui.input(|i| i.modifiers);
+                            if modifiers.shift {
+                                // Shift+右键：删除选中音符
+                                if !self.selected_notes.is_empty() {
+                                    self.delete_selected_notes();
+                                }
+                            } else {
+                                // 普通右键：显示上下文菜单
+                                self.context_menu_pos = Some(pointer);
+                                self.context_menu_open_pos = Some(pointer);
+                            }
+                        }
+                    }
                 }
-
-                // double-click creation deprecated
 
                 // Draw Timeline (Top Bar) - Drawn AFTER Notes
                 // Fill timeline background
@@ -1530,6 +1933,40 @@ impl MidiEditor {
                         );
                     }
                     measure_tick += ticks_per_measure;
+                }
+
+                // Draw Loop Region (if enabled) - before playhead
+                if self.loop_enabled {
+                    let loop_start_x = note_offset_x
+                        + tick_to_x(self.loop_start_tick, self.zoom_x, self.state.ticks_per_beat);
+                    let loop_end_x = note_offset_x
+                        + tick_to_x(self.loop_end_tick, self.zoom_x, self.state.ticks_per_beat);
+                    
+                    if loop_end_x > rect.min.x + key_width && loop_start_x < rect.max.x {
+                        let loop_rect = Rect::from_min_max(
+                            Pos2::new(loop_start_x.max(rect.min.x + key_width), rect.min.y),
+                            Pos2::new(loop_end_x.min(rect.max.x), rect.max.y),
+                        );
+                        // Semi-transparent overlay
+                        painter.rect_filled(
+                            loop_rect,
+                            0.0,
+                            Color32::from_rgba_unmultiplied(100, 150, 255, 60),
+                        );
+                        // Loop boundaries
+                        if loop_start_x >= rect.min.x + key_width {
+                            painter.line_segment(
+                                [Pos2::new(loop_start_x, rect.min.y), Pos2::new(loop_start_x, rect.max.y)],
+                                Stroke::new(2.0, Color32::from_rgb(100, 150, 255)),
+                            );
+                        }
+                        if loop_end_x <= rect.max.x {
+                            painter.line_segment(
+                                [Pos2::new(loop_end_x, rect.min.y), Pos2::new(loop_end_x, rect.max.y)],
+                                Stroke::new(2.0, Color32::from_rgb(100, 150, 255)),
+                            );
+                        }
+                    }
                 }
 
                 // Draw Playhead (Timeline portion + Line)
@@ -1630,7 +2067,7 @@ impl MidiEditor {
         }
     }
 
-    fn find_note_index_by_id(&self, id: NoteId) -> Option<usize> {
+    fn note_index_by_id(&self, id: NoteId) -> Option<usize> {
         self.state.notes.iter().position(|n| n.id == id)
     }
 
@@ -1647,10 +2084,6 @@ impl MidiEditor {
             self.undo_stack.remove(0);
         }
         self.redo_stack.clear();
-    }
-
-    fn note_index_by_id(&self, id: NoteId) -> Option<usize> {
-        self.state.notes.iter().position(|note| note.id == id)
     }
 
     fn note_mut_by_id(&mut self, id: NoteId) -> Option<&mut Note> {
@@ -1783,7 +2216,7 @@ impl MidiEditor {
         let mut originals = Vec::new();
         for id in targets {
             if uniques.insert(id) {
-                if let Some(idx) = self.find_note_index_by_id(id) {
+                if let Some(idx) = self.note_index_by_id(id) {
                     originals.push((id, self.state.notes[idx]));
                 }
             }
