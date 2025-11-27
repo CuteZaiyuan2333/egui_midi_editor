@@ -123,6 +123,9 @@ pub struct MidiEditorOptions {
     pub manual_scroll_y: f32,
     /// 可选：启动时将视图滚动到某个音高
     pub center_on_key: Option<u8>,
+    /// 是否启用 Space 键播放/暂停功能（默认启用）
+    /// 如果宿主应用需要处理 Space 键，可以设置为 false
+    pub enable_space_playback: bool,
 }
 
 impl Default for MidiEditorOptions {
@@ -141,6 +144,7 @@ impl Default for MidiEditorOptions {
             manual_scroll_x: 0.0,
             manual_scroll_y: 0.0,
             center_on_key: Some(60),
+            enable_space_playback: true,
         }
     }
 }

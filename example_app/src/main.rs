@@ -1,6 +1,6 @@
 use eframe::egui::{self, TopBottomPanel};
 use egui_midi::audio::{AudioEngine, PlaybackBackend};
-use egui_midi::structure::{MidiState, Note};
+use egui_midi::structure::MidiState;
 use egui_midi::ui::MidiEditor;
 use midly::Smf;
 use rfd::FileDialog;
@@ -31,21 +31,14 @@ impl MyApp {
         // Note: In a real app you might want to handle errors gracefully
         let audio: Arc<dyn PlaybackBackend> = Arc::new(AudioEngine::new());
 
-        let mut editor = MidiEditor::new(Some(audio));
-
-        // Add some dummy notes (C Major Chord Arpeggio)
-        // Assuming 480 ticks per beat
-        editor.insert_note(Note::new(0, 480, 60, 100)); // C4
-        editor.insert_note(Note::new(480, 480, 64, 100)); // E4
-        editor.insert_note(Note::new(960, 480, 67, 100)); // G4
-        editor.insert_note(Note::new(1440, 1920, 72, 100)); // C5
-
-        editor.center_on_c4();
+        // Create editor with default empty state
+        // Example data can be loaded via File > Open or File > Import MIDI
+        let editor = MidiEditor::new(Some(audio));
 
         Self {
             editor,
             current_path: None,
-            status_line: "Ready".to_owned(),
+            status_line: "Ready - Use File menu to open or import a MIDI file".to_owned(),
         }
     }
 

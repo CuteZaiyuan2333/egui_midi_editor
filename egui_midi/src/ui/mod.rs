@@ -110,6 +110,9 @@ pub struct MidiEditor {
     
     // Playback settings dialog
     pub show_playback_settings: bool,
+    
+    // Shortcut configuration
+    pub enable_space_playback: bool,
 }
 
 impl MidiEditor {
@@ -194,6 +197,7 @@ impl MidiEditor {
             context_menu_pos: None,
             context_menu_open_pos: None,
             show_playback_settings: false,
+            enable_space_playback: true, // Default enabled
         }
     }
 
@@ -218,6 +222,7 @@ impl MidiEditor {
         if let Some(key) = options.center_on_key {
             self.center_on_key(key);
         }
+        self.enable_space_playback = options.enable_space_playback;
     }
 
     pub fn set_event_listener<F>(&mut self, listener: F)
@@ -736,8 +741,8 @@ impl MidiEditor {
             self.ui_inspector(ui, total_height);
         });
 
-        // Handle playback logic
-        if ui.input(|i| i.key_pressed(Key::Space)) {
+        // Handle playback logic (only if Space key is enabled)
+        if self.enable_space_playback && ui.input(|i| i.key_pressed(Key::Space)) {
             self.is_playing = !self.is_playing;
             if self.is_playing {
                 self.last_update = ui.input(|i| i.time);

@@ -31,6 +31,184 @@
 - **跨平台**: 支持Windows、macOS、Linux
 - **实时性**: 低延迟的音频播放和UI响应
 
+### 架构职责边界
+
+项目采用清晰的职责分离设计，确保示例项目和编辑器库各司其职：
+
+#### 示例项目（example_app）职责
+
+示例项目负责**应用层功能**，包括：
+
+- **顶部菜单栏**：提供文件操作菜单（New, Open, Save, Save As, Import MIDI, Export MIDI）
+- **底部状态栏**：显示应用状态信息（文件路径、操作结果、错误信息）
+- **文件操作**：
+  - 项目文件格式（`.aquamidi`）的读写
+  - 标准MIDI文件（`.mid`）的导入导出
+  - 文件对话框交互
+- **状态管理**：维护当前文件路径、状态信息等应用级状态
+
+**不应包含**：
+- 直接操作编辑器内部状态（如 `insert_note()`）
+- 编辑器UI组件的实现
+- MIDI编辑逻辑
+
+#### 编辑器库（egui_midi）职责
+
+编辑器库负责**所有MIDI编辑功能**，包括：
+
+- **完整UI渲染**：
+  - 工具栏（播放控制、撤销/重做、BPM、节拍设置）
+  - 钢琴卷帘（音符编辑、选择、拖拽）
+  - 曲线编辑器（速度曲线、音高曲线）
+  - 检查器面板（属性编辑、高级工具）
+- **编辑功能**：
+  - 音符创建、删除、修改
+  - 选择、复制、粘贴、删除
+  - 量化、人性化、批量变换
+  - 撤销/重做
+- **播放控制**：播放/暂停、停止、循环播放
+- **快捷键处理**：Space键播放、Ctrl+C/X/V等编辑快捷键
+- **事件系统**：`EditorEvent` 和 `EditorCommand` 接口
+
+### 初始化最佳实践
+
+#### ✅ 推荐方式
+
+1. **使用默认空状态**：
+```rust
+let editor = MidiEditor::new(Some(audio));
+// 编辑器以空状态启动，用户可以通过文件菜单加载数据
+```
+
+2. **通过文件加载初始化数据**：
+```rust
+// 在应用启动时，可以加载示例文件或用户上次打开的文件
+if let Some(path) = get_last_opened_file() {
+    let state = read_aquamidi_file(&path)?;
+    editor.replace_state(state);
+}
+```
+
+3. **使用 EditorCommand 接口**（适用于程序化初始化）：
+```rust
+// 如果需要程序化添加初始数据，使用命令接口
+editor.apply_command(EditorCommand::AppendNotes(vec![
+    Note::new(0, 480, 60, 100),
+    Note::new(480, 480, 64, 100),
+]));
+editor.apply_command(EditorCommand::CenterOnKey(60));
+```
+
+#### ❌ 不推荐方式
+
+避免在应用初始化时直接调用编辑器方法：
+```rust
+// ❌ 不推荐：直接操作编辑器状态
+let mut editor = MidiEditor::new(Some(audio));
+editor.insert_note(Note::new(0, 480, 60, 100)); // 这属于编辑器功能
+editor.center_on_c4(); // 这属于编辑器功能
+```
+
+这种方式违反了职责边界，应该通过文件加载或命令接口来实现。
+
+### 配置选项
+
+编辑器库提供了丰富的配置选项，通过 `MidiEditorOptions` 进行设置：
+
+#### 基本配置
+
+```rust
+use egui_midi::editor::MidiEditorOptions;
+
+let options = MidiEditorOptions {
+    zoom_x: 100.0,
+    zoom_y: 20.0,
+    snap_interval: 120,
+    snap_mode: SnapMode::Absolute,
+    volume: 0.5,
+    center_on_key: Some(60), // 启动时居中到C4
+    enable_space_playback: true, // 启用Space键播放控制
+    ..Default::default()
+};
+
+let editor = MidiEditor::with_state_and_options(
+    MidiState::default(),
+    Some(audio),
+    options
+);
+```
+
+#### 快捷键配置
+
+如果宿主应用需要处理 Space 键（例如用于全局播放控制），可以禁用编辑器内部的 Space 键处理：
+
+```rust
+let options = MidiEditorOptions {
+    enable_space_playback: false, // 禁用Space键播放控制
+    ..Default::default()
+};
+
+// 然后通过 EditorCommand 控制播放
+editor.apply_command(EditorCommand::SetPlayback(true));
+```
+
+#### 视图配置
+
+```rust
+let options = MidiEditorOptions {
+    zoom_x: 150.0, // 水平缩放
+    zoom_y: 25.0,  // 垂直缩放
+    manual_scroll_x: 0.0, // 初始水平滚动位置
+    manual_scroll_y: 0.0, // 初始垂直滚动位置
+    center_on_key: Some(60), // 启动时居中到指定音高
+    ..Default::default()
+};
+```
+
+### 接口使用指南
+
+#### 状态管理接口
+
+- `replace_state(state)`: 完全替换编辑器状态（用于加载文件）
+- `snapshot_state()`: 获取当前状态的快照（用于保存文件）
+- `midi_state()`: 获取状态的只读引用
+
+#### 事件监听
+
+```rust
+editor.set_event_listener(|event| {
+    match event {
+        EditorEvent::StateReplaced(_) => {
+            // 状态已替换，可能需要保存
+        }
+        EditorEvent::PlaybackStateChanged { is_playing } => {
+            // 播放状态改变
+        }
+        _ => {}
+    }
+});
+
+// 在UI循环中处理事件
+for event in editor.take_events() {
+    // 处理事件
+}
+```
+
+#### 命令接口
+
+```rust
+// 控制播放
+editor.apply_command(EditorCommand::SetPlayback(true));
+editor.apply_command(EditorCommand::SeekSeconds(10.0));
+
+// 修改设置
+editor.apply_command(EditorCommand::SetBpm(120.0));
+editor.apply_command(EditorCommand::SetTimeSignature(4, 4));
+
+// 编辑操作
+editor.apply_command(EditorCommand::CenterOnKey(60));
+```
+
 ## 开发指南
 
 ### 环境搭建

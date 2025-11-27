@@ -27,6 +27,16 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - Delete selected notes (Delete/Backspace)
   - Quantize to snap grid
   
+- **Advanced Editing Tools**:
+  - **Humanize**: Add random timing and velocity variations to selected notes for a more natural feel
+    - Accessible via Inspector panel or right-click context menu
+    - Configurable time and velocity randomization ranges
+  - **Batch Transform**: Apply transformations to multiple selected notes simultaneously
+    - Velocity offset: Adjust velocity by a fixed amount
+    - Duration scale: Scale note durations by a factor
+    - Pitch offset: Transpose notes by semitones
+    - Interactive dialog for precise control
+  
 - **Undo / Redo Stack**: 
   - Complete undo/redo system that records all editing operations
   - Keyboard shortcuts: Ctrl/Cmd + Z (undo), Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y (redo)
@@ -64,6 +74,12 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - Timeline positioning (Seek)
   - Loop playback support (Loop regions with configurable start and end positions)
   - Time signature settings
+  - **Playback Settings Dialog**: Centralized settings panel for playback configuration
+    - Volume control (0-200%)
+    - Pitch shift adjustment (±12 semitones)
+    - Loop region configuration
+    - Snap interval and mode settings
+    - Accessible via UI button
 
 ### File I/O
 - **Strict Single-Track I/O**: 
@@ -71,6 +87,9 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - Single-track validation (`from_smf_strict` ensures single track and single channel)
   - `.aquamidi` project format support (example app)
   - Standard `.mid` file export
+  - **MIDI Import Support**: The example app supports direct import of standard `.mid` files
+    - Files are validated to ensure single-track and single-channel compliance
+    - Import via "Import MIDI..." menu option
 
 ### Developer API
 - **Developer-Friendly API**: 
@@ -182,7 +201,7 @@ editor.ui(ui);
 
 ### Example App File Menu
 
-The bundled `example_app` includes a File menu (New/Open/Save/Save As/Export MIDI) that operates on a custom single-track project format with the `.aquamidi` extension. `.aquamidi` files wrap a validated single-track SMF payload plus a lightweight header, ensuring demos stay aligned with the library’s “one track per editor” constraint. Use Export MIDI to write a standard `.mid` file that any DAW can open; importing `.mid` directly in the demo is not supported yet, so convert via your host application if needed.
+The bundled `example_app` includes a File menu (New/Open/Save/Save As/Import MIDI/Export MIDI) that operates on a custom single-track project format with the `.aquamidi` extension. `.aquamidi` files wrap a validated single-track SMF payload plus a lightweight header, ensuring demos stay aligned with the library's "one track per editor" constraint. The example app supports both importing standard `.mid` files (with single-track validation) and exporting to standard `.mid` format that any DAW can open.
 
 ### Strict Single-Track MIDI I/O
 
@@ -313,12 +332,33 @@ impl PlaybackBackend for DawAudioBackend {
 - ✅ Center on specified pitch
 - ✅ Adjustable curve editor height
 
+### Advanced Editing Tools
+- ✅ Humanize
+  - Add random timing variations to selected notes
+  - Add random velocity variations to selected notes
+  - Accessible via Inspector panel and right-click context menu
+  - Configurable time and velocity ranges
+- ✅ Batch Transform
+  - Velocity offset: Adjust velocity by fixed amount (-127 to +127)
+  - Duration scale: Scale note durations by factor (0.1x to 10.0x)
+  - Pitch offset: Transpose notes by semitones (-127 to +127)
+  - Interactive dialog with real-time preview
+  - Accessible via Inspector panel and right-click context menu
+
+### Playback Settings
+- ✅ Playback Settings Dialog
+  - Volume control (0-200%)
+  - Pitch shift adjustment (±12 semitones)
+  - Loop region configuration (start/end ticks)
+  - Snap interval selection (1/1, 1/2, 1/4, 1/8, 1/16, Free)
+  - Snap mode selection (Absolute/Relative)
+  - Accessible via UI button
+
 ## ⚠️ Current Limitations
 
 - **Strict Single-Track Constraint**: Validation rejects multi-track or mixed-channel SMF files
-- **Example App Limitation**: The example app can only open/save `.aquamidi` project files (use "Export MIDI" to export `.mid` files)
-- **Advanced Editing Features**: Advanced features such as humanize, lasso selection, etc. are still planned
 - **Multiple Curve Lanes**: Currently primarily supports velocity curves; pitch curve functionality is implemented but UI integration may need further refinement
+- **Swing Rhythm**: Swing ratio configuration is available but the actual swing rhythm feature is not yet fully implemented
 
 ## 🛠️ Development
 
@@ -404,6 +444,15 @@ We welcome contributions that improve:
   - Strict single-track validation (`from_smf_strict`)
   - `.aquamidi` project format
   - Standard `.mid` file export
+  - MIDI file import support (example app)
+  
+- [x] **Advanced Editing Tools**
+  - Humanize: Random timing and velocity variations
+  - Batch Transform: Velocity offset, duration scale, pitch offset
+  
+- [x] **Playback Settings**
+  - Centralized playback settings dialog
+  - Volume, pitch, loop, and snap configuration
   
 - [x] **Developer API**
   - Event/command bus system
@@ -412,10 +461,9 @@ We welcome contributions that improve:
 
 ### Planned Features 🚧
 - [ ] Loop playback UI improvements and transport feedback optimization
-- [ ] Advanced editing tools: Humanize, batch transforms
+- [ ] Swing rhythm implementation
 - [ ] Performance optimizations for dense arrangements
 - [ ] Better API design + comprehensive documentation and examples
-- [ ] Example app support for direct `.mid` file import
 
 ### Future Considerations 💡
 - [ ] Chord/scale-aware editing helpers
