@@ -20,6 +20,7 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - Multi-select support (Ctrl/Cmd + click, Shift + click to extend selection)
   - Box selection (drag selection area)
   - Snap to grid (configurable snap interval and mode)
+  - Enhanced visual feedback for selected notes (4x thicker white stroke)
   
 - **Inspector & Clipboard**: 
   - Property editing for multi-selected notes (pitch, velocity, start time, duration)
@@ -36,6 +37,11 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
     - Duration scale: Scale note durations by a factor
     - Pitch offset: Transpose notes by semitones
     - Interactive dialog for precise control
+  - **Swing Rhythm**: Apply swing timing to selected notes by directly modifying their positions
+    - Accessible via right-click context menu
+    - Real-time adjustment with slider (0-100%) and custom input (0-200%)
+    - Applies timing offset to even-numbered beats (2, 4, 6...)
+    - Immediately modifies note positions (not just during playback)
   
 - **Undo / Redo Stack**: 
   - Complete undo/redo system that records all editing operations
@@ -73,18 +79,19 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - BPM control (configurable and real-time adjustment)
   - Timeline positioning (Seek)
   - Loop playback support (Loop regions with configurable start and end positions)
-    - Interactive loop region editing (drag boundaries or move entire region)
-    - Visual loop markers on timeline
+    - Interactive loop region editing: Shift + Left-drag on timeline to adjust loop boundaries
+    - Visual loop markers on timeline (L/R indicators)
     - Loop status and position display in toolbar
+  - Timeline interactions:
+    - Left-drag on timeline: Adjust playhead position with grid snapping (Alt to disable snap)
+    - Shift + Left-drag on timeline: Edit loop region (adjust start/end or move entire region) with grid snapping
   - Time signature settings
   - **Playback Settings Dialog**: Centralized settings panel for playback configuration
     - Volume control (0-200%)
     - Pitch shift adjustment (±12 semitones)
     - Loop region configuration
     - Snap interval and mode settings
-    - Swing rhythm control (0-100%)
     - Accessible via UI button
-  - **Swing Rhythm**: Configurable swing timing that delays even-numbered beats for a groovy feel
   - **Enhanced Transport Feedback**: Transport events include loop state and position information
 
 ### File I/O
@@ -278,6 +285,7 @@ impl PlaybackBackend for DawAudioBackend {
 - ✅ Drag to box-select multiple notes
 - ✅ Snap to grid
 - ✅ Snap modes: Absolute and Relative
+- ✅ Enhanced visual feedback: Selected notes have 4x thicker white stroke
 
 ### Clipboard Operations
 - ✅ Copy selected notes (Ctrl/Cmd + C)
@@ -325,9 +333,12 @@ impl PlaybackBackend for DawAudioBackend {
 - ✅ Time signature settings
 - ✅ Timeline positioning (Seek)
 - ✅ Loop playback configuration
-  - Interactive loop region editing (drag boundaries, move region)
-  - Visual loop markers on timeline
+  - Interactive loop region editing: Shift + Left-drag on timeline
+  - Visual loop markers on timeline (L/R indicators)
   - Loop status and position display
+- ✅ Timeline interactions
+  - Left-drag: Adjust playhead with grid snapping (Alt to disable)
+  - Shift + Left-drag: Edit loop region with grid snapping
 - ✅ Enhanced transport feedback with loop state information
 
 ### File Operations
@@ -354,6 +365,12 @@ impl PlaybackBackend for DawAudioBackend {
   - Pitch offset: Transpose notes by semitones (-127 to +127)
   - Interactive dialog with real-time preview
   - Accessible via Inspector panel and right-click context menu
+- ✅ Swing Rhythm
+  - Apply swing timing to selected notes by directly modifying positions
+  - Accessible via right-click context menu
+  - Real-time adjustment: Slider (0-100%) and custom input (0-200%)
+  - Applies timing offset to even-numbered beats (2, 4, 6...)
+  - Immediately modifies note positions (not just during playback)
 
 ### Playback Settings
 - ✅ Playback Settings Dialog
@@ -362,7 +379,6 @@ impl PlaybackBackend for DawAudioBackend {
   - Loop region configuration (start/end ticks)
   - Snap interval selection (1/1, 1/2, 1/4, 1/8, 1/16, Free)
   - Snap mode selection (Absolute/Relative)
-  - Swing rhythm control (0-75%)
   - Accessible via UI button
 
 ## ⚠️ Current Limitations
@@ -447,9 +463,8 @@ We welcome contributions that improve:
 - [x] **Transport Controls**
   - Play/Pause/Stop
   - BPM control
-  - Timeline positioning
-  - Loop playback support with interactive editing
-  - Swing rhythm timing
+  - Timeline positioning with grid snapping
+  - Loop playback support with interactive editing (Shift + Left-drag)
   - Enhanced transport feedback
   
 - [x] **File I/O**
@@ -461,15 +476,25 @@ We welcome contributions that improve:
 - [x] **Advanced Editing Tools**
   - Humanize: Random timing and velocity variations
   - Batch Transform: Velocity offset, duration scale, pitch offset
+  - Swing Rhythm: Direct note position modification (0-200% range, accessible via right-click menu)
   
 - [x] **Playback Settings**
   - Centralized playback settings dialog
-  - Volume, pitch, loop, snap, and swing configuration
+  - Volume, pitch, loop, and snap configuration
   
 - [x] **Developer API**
   - Event/command bus system
   - Playback observer interface
   - Customizable options
+
+## 🎉 Recent Updates
+
+### Latest Improvements
+- **Swing Rhythm Enhancement**: Moved to right-click context menu with real-time adjustment (0-200% range, supports custom input)
+- **Interactive Loop Editing**: Shift + Left-drag on timeline to edit loop boundaries with grid snapping
+- **Timeline Interactions**: Left-drag for playhead positioning, Shift + Left-drag for loop editing (both support grid snapping, Alt to disable)
+- **Visual Feedback**: Selected notes now have 4x thicker white stroke for better visibility
+- **Enhanced Transport Events**: Transport events now include detailed loop state and position information
 
 ### Planned Features 🚧
 - [ ] Performance optimizations for dense arrangements
