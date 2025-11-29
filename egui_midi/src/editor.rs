@@ -38,6 +38,10 @@ pub enum EditorEvent {
     TransportChanged {
         current_time: f32,
         current_tick: u64,
+        loop_enabled: bool,
+        loop_start_tick: u64,
+        loop_end_tick: u64,
+        loop_progress: f32, // 0.0 to 1.0, position within loop region
     },
     CurveLaneAdded(CurveLaneId),
     CurveLaneRemoved(CurveLaneId),

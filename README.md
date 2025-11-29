@@ -73,13 +73,19 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
   - BPM control (configurable and real-time adjustment)
   - Timeline positioning (Seek)
   - Loop playback support (Loop regions with configurable start and end positions)
+    - Interactive loop region editing (drag boundaries or move entire region)
+    - Visual loop markers on timeline
+    - Loop status and position display in toolbar
   - Time signature settings
   - **Playback Settings Dialog**: Centralized settings panel for playback configuration
     - Volume control (0-200%)
     - Pitch shift adjustment (±12 semitones)
     - Loop region configuration
     - Snap interval and mode settings
+    - Swing rhythm control (0-100%)
     - Accessible via UI button
+  - **Swing Rhythm**: Configurable swing timing that delays even-numbered beats for a groovy feel
+  - **Enhanced Transport Feedback**: Transport events include loop state and position information
 
 ### File I/O
 - **Strict Single-Track I/O**: 
@@ -319,6 +325,10 @@ impl PlaybackBackend for DawAudioBackend {
 - ✅ Time signature settings
 - ✅ Timeline positioning (Seek)
 - ✅ Loop playback configuration
+  - Interactive loop region editing (drag boundaries, move region)
+  - Visual loop markers on timeline
+  - Loop status and position display
+- ✅ Enhanced transport feedback with loop state information
 
 ### File Operations
 - ✅ Import MIDI files (single-track validation)
@@ -352,13 +362,13 @@ impl PlaybackBackend for DawAudioBackend {
   - Loop region configuration (start/end ticks)
   - Snap interval selection (1/1, 1/2, 1/4, 1/8, 1/16, Free)
   - Snap mode selection (Absolute/Relative)
+  - Swing rhythm control (0-75%)
   - Accessible via UI button
 
 ## ⚠️ Current Limitations
 
 - **Strict Single-Track Constraint**: Validation rejects multi-track or mixed-channel SMF files
 - **Multiple Curve Lanes**: Currently primarily supports velocity curves; pitch curve functionality is implemented but UI integration may need further refinement
-- **Swing Rhythm**: Swing ratio configuration is available but the actual swing rhythm feature is not yet fully implemented
 
 ## 🛠️ Development
 
@@ -438,7 +448,9 @@ We welcome contributions that improve:
   - Play/Pause/Stop
   - BPM control
   - Timeline positioning
-  - Loop playback support
+  - Loop playback support with interactive editing
+  - Swing rhythm timing
+  - Enhanced transport feedback
   
 - [x] **File I/O**
   - Strict single-track validation (`from_smf_strict`)
@@ -452,7 +464,7 @@ We welcome contributions that improve:
   
 - [x] **Playback Settings**
   - Centralized playback settings dialog
-  - Volume, pitch, loop, and snap configuration
+  - Volume, pitch, loop, snap, and swing configuration
   
 - [x] **Developer API**
   - Event/command bus system
@@ -460,8 +472,6 @@ We welcome contributions that improve:
   - Customizable options
 
 ### Planned Features 🚧
-- [ ] Loop playback UI improvements and transport feedback optimization
-- [ ] Swing rhythm implementation
 - [ ] Performance optimizations for dense arrangements
 - [ ] Better API design + comprehensive documentation and examples
 
