@@ -1686,6 +1686,22 @@ impl MidiEditor {
                         let tick = (beats * seconds_per_beat / seconds_per_tick) as i64;
                         let snapped_tick = self.snap_tick(tick, None, disable_snap);
                         
+                        // Handle right-click: Shift+右键删除循环区域
+                        if response.clicked_by(PointerButton::Secondary) && is_shift {
+                            // 检查循环区域是否启用
+                            if self.loop_enabled {
+                                // 将点击位置转换为 tick（使用已计算的 snapped_tick）
+                                let click_tick = snapped_tick as u64;
+                                
+                                // 判断点击位置是否在循环区域内
+                                if click_tick >= self.loop_start_tick && click_tick <= self.loop_end_tick {
+                                    // 删除循环区域
+                                    self.loop_enabled = false;
+                                    pointer_consumed = true;
+                                }
+                            }
+                        }
+                        
                         // Handle drag start
                         if ui.input(|i| i.pointer.primary_pressed()) && !self.is_dragging_note {
                             if is_shift {
