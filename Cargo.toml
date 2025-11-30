@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "egui_midi",
+    "egui_track",
+    "egui_track_example",
     "example_app",
 ]
 resolver = "2"
