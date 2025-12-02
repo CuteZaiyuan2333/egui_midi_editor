@@ -36,7 +36,7 @@ impl TrackLaneHeader {
                     ui.label(&self.track.name);
                 });
 
-                // Volume slider (simplified)
+                // Volume slider
                 ui.add_space(4.0);
                 let mut volume = self.track.volume;
                 let _volume_slider = ui.add(Slider::new(&mut volume, 0.0..=1.0).text("Vol"));

@@ -6,6 +6,8 @@ mod timeline;
 mod track_lane;
 mod clip;
 mod renderer;
+mod toolbar;
+mod statusbar;
 
 use crate::editor::{TrackEditorCommand, TrackEditorEvent};
 use crate::structure::{Track, Clip, TrackId, ClipId, TimelineState, ClipType};
@@ -44,6 +46,16 @@ pub struct TrackEditor {
     drag_clip_id: Option<ClipId>,
     selection_box_start: Option<Pos2>,
     selection_box_end: Option<Pos2>,
+    pan_start_pos: Option<Pos2>,
+    pan_start_scroll_x: Option<f64>,
+    pan_start_scroll_y: Option<f32>,
+    
+    // Editor state
+    metronome_enabled: bool,
+    
+    // Playback state
+    is_playing: bool,
+    last_update: f64,
     
     // Events
     pending_events: Vec<TrackEditorEvent>,
@@ -76,6 +88,12 @@ impl TrackEditor {
             drag_clip_id: None,
             selection_box_start: None,
             selection_box_end: None,
+            pan_start_pos: None,
+            pan_start_scroll_x: None,
+            pan_start_scroll_y: None,
+            metronome_enabled: false,
+            is_playing: false,
+            last_update: 0.0,
             pending_events: Vec::new(),
             event_listener: None,
         }
@@ -119,27 +137,83 @@ impl TrackEditor {
                 self.timeline.playhead_position = position;
                 self.emit_event(TrackEditorEvent::PlayheadChanged { position });
             }
+            TrackEditorCommand::SetTimeSignature { numer, denom } => {
+                self.timeline.time_signature = (numer, denom);
+                self.emit_event(TrackEditorEvent::TimeSignatureChanged { numer, denom });
+            }
+            TrackEditorCommand::SetBPM { bpm } => {
+                self.timeline.bpm = bpm.clamp(20.0, 400.0);
+                self.emit_event(TrackEditorEvent::BPMChanged { bpm: self.timeline.bpm });
+            }
+            TrackEditorCommand::SetMetronome { enabled } => {
+                self.metronome_enabled = enabled;
+                self.emit_event(TrackEditorEvent::MetronomeChanged { enabled });
+            }
+            TrackEditorCommand::SetPlayback { is_playing } => {
+                self.is_playing = is_playing;
+                if !is_playing {
+                    // 暂停时更新 last_update，避免下次播放时出现大跳跃
+                    self.last_update = 0.0; // 将在 ui() 中更新为当前时间
+                }
+                self.emit_event(TrackEditorEvent::PlaybackStateChanged { is_playing });
+            }
+            TrackEditorCommand::StopPlayback => {
+                self.is_playing = false;
+                self.timeline.playhead_position = 0.0;
+                self.last_update = 0.0; // 将在 ui() 中更新为当前时间
+                self.emit_event(TrackEditorEvent::PlaybackStateChanged { is_playing: false });
+                self.emit_event(TrackEditorEvent::PlayheadChanged { position: 0.0 });
+            }
         }
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        // 播放时的自动时间更新（参考 MIDI 编辑器的实现）
+        if self.is_playing {
+            ui.ctx().request_repaint();
+            let now = ui.input(|i| i.time);
+            let dt = now - self.last_update;
+            self.last_update = now;
+
+            if dt > 0.0 && dt < 1.0 {
+                // 避免大跳跃（例如窗口失去焦点后恢复）
+                self.timeline.playhead_position += dt;
+                self.emit_event(TrackEditorEvent::PlayheadChanged {
+                    position: self.timeline.playhead_position,
+                });
+            }
+        } else {
+            // 非播放状态时，更新 last_update 以便下次播放时正确计算时间差
+            self.last_update = ui.input(|i| i.time);
+        }
+
         let available_size = ui.available_size();
         ui.set_min_size(available_size);
 
         ui.vertical(|ui| {
-            // Timeline
+            // Toolbar at the top (水平布局，与 MIDI 编辑器一致)
+            let mut toolbar = toolbar::Toolbar::new(&self.timeline);
+            toolbar.set_metronome(self.metronome_enabled);
+            toolbar.set_playing(self.is_playing);
+            toolbar.set_current_time(self.timeline.playhead_position);
+            toolbar.ui(ui, &mut |cmd| {
+                self.execute_command(cmd);
+            });
+            
+            // Timeline below toolbar
             let mut timeline_ui = timeline::Timeline::new(&self.timeline, self.options.track_header_width);
             timeline_ui.ui(ui, self.options.timeline_height);
             
             // Handle timeline interactions (click to set playhead)
+            // 使用基于 tick 的坐标系统（与 MIDI 编辑器一致）
             if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 if ui.rect_contains_pointer(Rect::from_min_size(
                     ui.cursor().left_top(),
                     Vec2::new(ui.available_width(), self.options.timeline_height),
                 )) {
                     if ui.input(|i| i.pointer.primary_clicked()) {
-                        let clicked_x = pointer_pos.x - self.options.track_header_width;
-                        let clicked_time = self.timeline.x_to_time(clicked_x);
+                        let clicked_tick = self.timeline.x_to_tick(pointer_pos.x, self.options.track_header_width);
+                        let clicked_time = self.timeline.tick_to_time(clicked_tick);
                         self.execute_command(TrackEditorCommand::SetPlayhead {
                             position: clicked_time.max(0.0),
                         });
@@ -160,19 +234,7 @@ impl TrackEditor {
                     }
                 });
 
-            // Handle horizontal scrolling
-            if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                let scroll_area_size = ui.available_size();
-                let scroll_area_rect = Rect::from_min_size(ui.cursor().left_top(), scroll_area_size);
-                if scroll_area_rect.contains(pointer_pos) {
-                    if ui.input(|i| i.pointer.middle_down()) {
-                        // Pan with middle mouse button
-                        let delta = ui.input(|i| i.pointer.delta());
-                        let pan_amount = -delta.x as f64 / self.timeline.zoom_x as f64;
-                        self.timeline.scroll_x = (self.timeline.scroll_x + pan_amount).max(0.0);
-                    }
-                }
-            }
+            // Middle mouse button panning will be handled in handle_interactions
         });
 
         self.handle_interactions(ui);
@@ -204,62 +266,91 @@ impl TrackEditor {
                 Sense::click_and_drag(),
             );
 
+            // Use painter_at to restrict drawing to track content area only
+            // This ensures clips don't draw over the track header panel
+            let track_content_rect = track_content_response.rect;
+            let painter = ui.painter_at(track_content_rect);
+            
             // Draw track background
-            let painter = ui.painter();
             painter.rect_filled(
-                track_content_response.rect,
+                track_content_rect,
                 0.0,
                 Color32::from_gray(30),
             );
 
-            // Draw grid first (behind clips)
-            crate::ui::renderer::draw_track_grid(
-                painter,
-                track_content_response.rect,
+            // Draw grid lines in track content area (using unified grid system)
+            // This ensures grid lines align perfectly with timeline grid
+            renderer::draw_unified_grid(
+                &painter,
+                track_content_rect.min.y,
+                track_content_rect.max.y,
                 &timeline,
                 options.track_header_width,
+                track_content_rect.min.x,
+                track_content_rect.max.x,
             );
 
-            // Draw clips
-            for clip in &track_clips {
+            // Draw clips (with viewport culling for performance)
+            // 使用基于节拍的可见性检查（与 MIDI 编辑器一致）
+            let visible_beats_start = (-timeline.manual_scroll_x / timeline.zoom_x).floor();
+            let visible_beats_end = visible_beats_start + (track_content_rect.width() / timeline.zoom_x) + 2.0;
+            let tpb = timeline.ticks_per_beat.max(1) as u64;
+            let visible_start_tick = (visible_beats_start * tpb as f32).floor() as u64;
+            let visible_end_tick = (visible_beats_end * tpb as f32).ceil() as u64;
+            
+            // Filter clips that are potentially visible
+            let visible_clips: Vec<_> = track_clips.iter()
+                .filter(|clip| {
+                    let clip_start_tick = timeline.time_to_tick(clip.start_time);
+                    let clip_end_tick = timeline.time_to_tick(clip.start_time + clip.duration);
+                    // Clip is visible if it overlaps with visible tick range
+                    clip_end_tick >= visible_start_tick && clip_start_tick <= visible_end_tick
+                })
+                .collect();
+            
+            for clip in visible_clips {
                 let is_selected = selected_clips.contains(&clip.id);
-                let mut renderer = clip::ClipRenderer::new(clip, &timeline, &options);
+                let mut renderer = clip::ClipRenderer::new(clip, &timeline, &options, options.track_header_width);
                 renderer.set_selected(is_selected);
-                renderer.render(painter, track_content_response.rect.min.y, options.track_header_width);
+                // Calculate clip position using tick-based coordinates
+                let clip_start_tick = timeline.time_to_tick(clip.start_time);
+                let clip_x = timeline.tick_to_x(clip_start_tick, options.track_header_width);
+                let duration_tick = timeline.time_to_tick(clip.start_time + clip.duration) - clip_start_tick;
+                let clip_width = ((duration_tick as f32 / tpb as f32) * timeline.zoom_x).max(options.min_clip_width);
+                // Only render if clip overlaps with track content area (not in header)
+                if clip_x + clip_width > track_content_rect.min.x && clip_x < track_content_rect.max.x {
+                    // Clip is visible in track content area, render it
+                    renderer.render(&painter, track_content_rect.min.y);
+                }
             }
 
-            // Draw selection box
+            // Draw playhead in track content area (参考 MIDI 编辑器的实现)
+            // 使用与时间轴相同的坐标转换，确保播放头位置一致
+            let playhead_tick = timeline.time_to_tick(timeline.playhead_position);
+            let playhead_x = timeline.tick_to_x(playhead_tick, options.track_header_width);
+            if playhead_x >= track_content_rect.min.x && playhead_x <= track_content_rect.max.x {
+                // 使用与 MIDI 编辑器一致的样式：半透明蓝色，宽度 2.0
+                painter.line_segment(
+                    [
+                        Pos2::new(playhead_x, track_content_rect.min.y),
+                        Pos2::new(playhead_x, track_content_rect.max.y),
+                    ],
+                    Stroke::new(2.0, Color32::from_rgba_premultiplied(100, 200, 255, 128)),
+                );
+            }
+
+            // Draw selection box (using global painter since it might span multiple tracks)
             if let (Some(start), Some(end)) = (selection_box_start, selection_box_end) {
                 let box_rect = Rect::from_two_pos(start, end);
-                if box_rect.intersects(track_content_response.rect) {
-                    crate::ui::renderer::draw_selection_box(painter, box_rect);
+                if box_rect.intersects(track_content_rect) {
+                    // Use the restricted painter to ensure selection box doesn't draw over header
+                    let selection_painter = ui.painter_at(track_content_rect);
+                    crate::ui::renderer::draw_selection_box(&selection_painter, box_rect);
                 }
             }
 
             // Handle track content interactions
             self.handle_track_content_interaction(ui, track_index, &track_content_response);
-            
-            // Update selection from box for this track
-            if let (Some(start), Some(end)) = (selection_box_start, selection_box_end) {
-                let box_rect = Rect::from_two_pos(start, end);
-                if box_rect.intersects(track_content_response.rect) {
-                    for clip in &track_clips {
-                        let clip_x = timeline.time_to_x(clip.start_time) + options.track_header_width;
-                        let clip_width = (clip.duration * timeline.zoom_x as f64).max(options.min_clip_width as f64) as f32;
-                        let clip_y = track_content_response.rect.min.y + 10.0;
-                        let clip_height = 60.0;
-                        
-                        let clip_rect = Rect::from_min_size(
-                            Pos2::new(clip_x, clip_y),
-                            Vec2::new(clip_width, clip_height),
-                        );
-                        
-                        if clip_rect.intersects(box_rect) {
-                            self.selected_clips.insert(clip.id);
-                        }
-                    }
-                }
-            }
         });
     }
 
@@ -280,44 +371,65 @@ impl TrackEditor {
         let track_y = response.rect.min.y;
         let pointer_pos = response.interact_pointer_pos();
         
+        // Calculate visible time range for viewport culling (使用基于节拍的检查)
+        let track_content_rect = response.rect;
+        let visible_beats_start = (-timeline.manual_scroll_x / timeline.zoom_x).floor();
+        let visible_beats_end = visible_beats_start + (track_content_rect.width() / timeline.zoom_x) + 2.0;
+        let tpb = timeline.ticks_per_beat.max(1) as u64;
+        let visible_start_tick = (visible_beats_start * tpb as f32).floor() as u64;
+        let visible_end_tick = (visible_beats_end * tpb as f32).ceil() as u64;
+        
+        // Filter clips that are potentially visible (with some margin for partial visibility)
+        let visible_clips: Vec<_> = track_clips.iter()
+            .filter(|clip| {
+                let clip_start_tick = timeline.time_to_tick(clip.start_time);
+                let clip_end_tick = timeline.time_to_tick(clip.start_time + clip.duration);
+                // Clip is visible if it overlaps with visible tick range
+                clip_end_tick >= visible_start_tick && clip_start_tick <= visible_end_tick
+            })
+            .collect();
+        
         // Collect events to process after borrow ends
         let mut click_events: Vec<(ClipId, Modifiers, clip::ClipHitRegion)> = Vec::new();
         let mut double_click_events: Vec<ClipId> = Vec::new();
         let mut drag_start_events: Vec<(ClipId, Pos2, f64, DragAction)> = Vec::new();
         let mut cursor_icon: Option<CursorIcon> = None;
 
-        // Handle clip interactions
-        for clip in &track_clips {
-            let renderer = clip::ClipRenderer::new(clip, &timeline, &options);
+        // Handle clip interactions (only for visible clips)
+        for clip in visible_clips {
+            let renderer = clip::ClipRenderer::new(clip, &timeline, &options, options.track_header_width);
             if let Some(pos) = pointer_pos {
-                if let Some(hit_region) = renderer.hit_test(pos, track_y, options.track_header_width) {
-                    // Update cursor based on hit region
-                    cursor_icon = Some(match hit_region {
-                        clip::ClipHitRegion::LeftEdge | clip::ClipHitRegion::RightEdge => {
-                            CursorIcon::ResizeHorizontal
+                // Only test hit if pointer is within track content area
+                if track_content_rect.contains(pos) {
+                    if let Some(hit_region) = renderer.hit_test(pos, track_y) {
+                        // Update cursor based on hit region
+                        cursor_icon = Some(match hit_region {
+                            clip::ClipHitRegion::LeftEdge | clip::ClipHitRegion::RightEdge => {
+                                CursorIcon::ResizeHorizontal
+                            }
+                            clip::ClipHitRegion::Body => CursorIcon::Grab,
+                        });
+
+                        // Collect click events
+                        if response.clicked_by(PointerButton::Primary) {
+                            let modifiers = ui.input(|i| i.modifiers);
+                            click_events.push((clip.id, modifiers, hit_region));
                         }
-                        clip::ClipHitRegion::Body => CursorIcon::Grab,
-                    });
 
-                    // Collect click events
-                    if response.clicked_by(PointerButton::Primary) {
-                        let modifiers = ui.input(|i| i.modifiers);
-                        click_events.push((clip.id, modifiers, hit_region));
-                    }
+                        // Collect double click events
+                        if response.double_clicked_by(PointerButton::Primary) {
+                            double_click_events.push(clip.id);
+                        }
 
-                    // Collect double click events
-                    if response.double_clicked_by(PointerButton::Primary) {
-                        double_click_events.push(clip.id);
-                    }
-
-                    // Collect drag start events
-                    if response.drag_started_by(PointerButton::Primary) {
-                        let drag_action = match hit_region {
-                            clip::ClipHitRegion::LeftEdge => DragAction::ResizeClipStart,
-                            clip::ClipHitRegion::RightEdge => DragAction::ResizeClipEnd,
-                            clip::ClipHitRegion::Body => DragAction::MoveClip,
-                        };
-                        drag_start_events.push((clip.id, pos, clip.start_time, drag_action));
+                        // Collect drag start events
+                        if response.drag_started_by(PointerButton::Primary) {
+                            let drag_action = match hit_region {
+                                clip::ClipHitRegion::LeftEdge => DragAction::ResizeClipStart,
+                                clip::ClipHitRegion::RightEdge => DragAction::ResizeClipEnd,
+                                clip::ClipHitRegion::Body => DragAction::MoveClip,
+                            };
+                            drag_start_events.push((clip.id, pos, clip.start_time, drag_action));
+                        }
                     }
                 }
             }
@@ -366,9 +478,56 @@ impl TrackEditor {
         }
     }
 
+    /// 限制滚动，确保最多只能看到 -0.25 拍的位置
+    fn clamp_scroll_to_minus_one_beat(&mut self) {
+        let visible_earliest_beat = self.timeline.scroll_x - (self.timeline.manual_scroll_x / self.timeline.zoom_x) as f64;
+        if visible_earliest_beat < -0.25 {
+            // 限制到 -0.25 拍：manual_scroll_x = (scroll_x + 0.25) * zoom_x
+            self.timeline.manual_scroll_x = ((self.timeline.scroll_x + 0.25) * self.timeline.zoom_x as f64) as f32;
+        }
+    }
+
     fn handle_interactions(&mut self, ui: &mut Ui) {
-        // Handle ongoing drags
-        if self.drag_action != DragAction::None {
+        // Handle middle mouse button panning (使用 manual_scroll_x/y，与 MIDI 编辑器一致)
+        if ui.input(|i| i.pointer.middle_down()) {
+            if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                // Start panning if not already panning
+                if self.pan_start_pos.is_none() {
+                    self.pan_start_pos = Some(pointer_pos);
+                    self.pan_start_scroll_x = Some(self.timeline.manual_scroll_x as f64);
+                    self.pan_start_scroll_y = Some(self.timeline.manual_scroll_y);
+                    self.drag_action = DragAction::Pan;
+                    // Set cursor to indicate panning
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                } else if let (Some(start_pos), Some(start_scroll_x), Some(start_scroll_y)) = 
+                    (self.pan_start_pos, self.pan_start_scroll_x, self.pan_start_scroll_y) {
+                    // Continue panning
+                    let delta = pointer_pos - start_pos;
+                    // Horizontal pan: 直接更新 manual_scroll_x（像素单位）
+                    let new_manual_scroll_x = start_scroll_x as f32 + delta.x;
+                    
+                    // 限制：最多只能看到 -1 拍的位置
+                    self.timeline.manual_scroll_x = new_manual_scroll_x;
+                    self.clamp_scroll_to_minus_one_beat();
+                    
+                    // Vertical pan: 直接更新 manual_scroll_y（像素单位）
+                    self.timeline.manual_scroll_y = start_scroll_y + delta.y;
+                    // Keep cursor as grabbing during pan
+                    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                }
+            }
+        } else {
+            // End panning when middle button is released
+            if self.drag_action == DragAction::Pan {
+                self.pan_start_pos = None;
+                self.pan_start_scroll_x = None;
+                self.pan_start_scroll_y = None;
+                self.drag_action = DragAction::None;
+            }
+        }
+
+        // Handle ongoing drags (for clips and selection)
+        if self.drag_action != DragAction::None && self.drag_action != DragAction::Pan {
             if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 match self.drag_action {
                     DragAction::MoveClip => {
@@ -383,7 +542,7 @@ impl TrackEditor {
                     }
                     DragAction::SelectBox => {
                         self.selection_box_end = Some(pointer_pos);
-                        // Selection box update will be handled per-track in ui_track
+                        self.update_selection_from_box();
                     }
                     _ => {}
                 }
@@ -425,17 +584,13 @@ impl TrackEditor {
                 if scroll_delta != 0.0 {
                     let zoom_factor = 1.0 + scroll_delta * 0.001;
                     self.timeline.zoom_x = (self.timeline.zoom_x * zoom_factor).max(10.0).min(1000.0);
+                    // 缩放后，确保不会看到小于 -1 拍的位置
+                    self.clamp_scroll_to_minus_one_beat();
                 }
             }
 
-            // Pan with mouse wheel (horizontal scroll)
-            if !i.modifiers.ctrl {
-                let scroll_delta = i.raw_scroll_delta.x;
-                if scroll_delta != 0.0 {
-                    let pan_amount = scroll_delta as f64 / self.timeline.zoom_x as f64;
-                    self.timeline.scroll_x = (self.timeline.scroll_x - pan_amount).max(0.0);
-                }
-            }
+            // Mouse wheel horizontal scroll is now handled by middle button drag
+            // Vertical scroll is handled by ScrollArea widget for track list
         });
     }
 
@@ -466,12 +621,29 @@ impl TrackEditor {
     }
 
     fn handle_clip_drag(&mut self, _ui: &mut Ui, clip_id: ClipId, pointer_pos: Pos2) {
-        if let Some(start_pos) = self.drag_start_pos {
+        if let Some(_start_pos) = self.drag_start_pos {
             if let Some(start_time) = self.drag_start_time {
-                // 计算相对于轨道内容区域的 delta（减去 header_width）
-                let delta_x = pointer_pos.x - start_pos.x;
-                let delta_time = delta_x as f64 / self.timeline.zoom_x as f64;
-                let new_time = start_time + delta_time;
+                // 使用基于 tick 的坐标转换（与 MIDI 编辑器一致）
+                let base_x = self.options.track_header_width;
+                let rel_x = pointer_pos.x - base_x - self.timeline.manual_scroll_x;
+                let beats = rel_x / self.timeline.zoom_x;
+                let tpb = self.timeline.ticks_per_beat.max(1) as f32;
+                let pointer_tick = (beats * tpb).round() as i64;
+
+                // 计算原始剪辑的 tick
+                let original_start_tick = self.timeline.time_to_tick(start_time) as i64;
+                
+                // 计算偏移量（tick）
+                let delta_tick = pointer_tick - original_start_tick;
+                let new_start_tick = (original_start_tick + delta_tick).max(0) as u64;
+
+                // 对齐到网格（与 MIDI 编辑器一致）
+                let disable_snap = false; // 可以从 UI 输入获取（如 Alt 键）
+                let snapped_tick = self.timeline.snap_tick(new_start_tick, disable_snap);
+                let snapped_time = self.timeline.tick_to_time(snapped_tick);
+
+                // 限制：不允许将剪辑拖动到小于 0 的位置
+                let clamped_time = snapped_time.max(0.0);
 
                 // Find the clip and its current track
                 let mut clip_track_id = None;
@@ -483,17 +655,10 @@ impl TrackEditor {
                 }
 
                 if let Some(track_id) = clip_track_id {
-                    // Apply snapping if enabled
-                    let snapped_time = if self.timeline.snap_enabled {
-                        self.timeline.snap_time(new_time).max(0.0)
-                    } else {
-                        new_time.max(0.0)
-                    };
-                    
                     self.execute_command(TrackEditorCommand::MoveClip {
                         clip_id,
                         new_track_id: track_id,
-                        new_start: snapped_time,
+                        new_start: clamped_time,
                     });
                 }
             }
@@ -501,35 +666,83 @@ impl TrackEditor {
     }
 
     fn handle_clip_resize(&mut self, _ui: &mut Ui, clip_id: ClipId, pointer_pos: Pos2) {
-        if let Some(start_pos) = self.drag_start_pos {
+        if let Some(_start_pos) = self.drag_start_pos {
             if let Some(_start_time) = self.drag_start_time {
-                // 计算相对于轨道内容区域的 delta
-                let delta_x = pointer_pos.x - start_pos.x;
-                let delta_time = delta_x as f64 / self.timeline.zoom_x as f64;
+                // 使用基于 tick 的坐标转换（与 MIDI 编辑器一致）
+                let base_x = self.options.track_header_width;
+                let rel_x = pointer_pos.x - base_x - self.timeline.manual_scroll_x;
+                let beats = rel_x / self.timeline.zoom_x;
+                let tpb = self.timeline.ticks_per_beat.max(1) as f32;
+                let pointer_tick = (beats * tpb).round() as i64;
 
                 // Find the clip
                 for track in &self.tracks {
                     if let Some(clip) = track.clips.iter().find(|c| c.id == clip_id) {
                         let resize_from_start = self.drag_action == DragAction::ResizeClipStart;
-                        let mut new_duration = if resize_from_start {
-                            clip.duration - delta_time
+                        
+                        // 计算剪辑的 tick 范围
+                        let clip_start_tick = self.timeline.time_to_tick(clip.start_time) as i64;
+                        let clip_end_tick = self.timeline.time_to_tick(clip.start_time + clip.duration) as i64;
+                        
+                        let (new_start_tick, new_end_tick) = if resize_from_start {
+                            // 从开始调整：移动开始位置
+                            let new_start = pointer_tick.max(0);
+                            (new_start, clip_end_tick)
                         } else {
-                            clip.duration + delta_time
+                            // 从结束调整：移动结束位置
+                            (clip_start_tick, pointer_tick.max(clip_start_tick + 1))
                         };
                         
-                        // Apply snapping to duration
-                        if self.timeline.snap_enabled {
-                            new_duration = self.timeline.snap_time(new_duration);
-                        }
+                        // 对齐到网格
+                        let disable_snap = false;
+                        let snapped_start = self.timeline.snap_tick(new_start_tick as u64, disable_snap) as i64;
+                        let snapped_end = self.timeline.snap_tick(new_end_tick as u64, disable_snap) as i64;
                         
-                        // Ensure minimum duration
-                        new_duration = new_duration.max(0.1);
-
-                        self.execute_command(TrackEditorCommand::ResizeClip {
-                            clip_id,
-                            new_duration,
-                            resize_from_start,
-                        });
+                        if resize_from_start {
+                            // 调整开始时间
+                            let new_start_time = self.timeline.tick_to_time(snapped_start as u64);
+                            // 限制：不允许将剪辑拖动到小于 0 的位置
+                            let clamped_start_time = new_start_time.max(0.0);
+                            let new_duration = self.timeline.tick_to_time(snapped_end as u64) - clamped_start_time;
+                            
+                            // 需要同时更新开始时间和持续时间
+                            // 这里简化处理，只更新持续时间，开始时间在 move_clip 中处理
+                            // 但我们需要确保开始时间 >= 0
+                            if clamped_start_time >= 0.0 {
+                                self.execute_command(TrackEditorCommand::ResizeClip {
+                                    clip_id,
+                                    new_duration: new_duration.max(0.01),
+                                    resize_from_start: true,
+                                });
+                                // 如果开始时间被限制，需要移动剪辑
+                                if clamped_start_time != new_start_time {
+                                    // 找到轨道 ID
+                                    let mut clip_track_id = None;
+                                    for track in &self.tracks {
+                                        if track.clips.iter().any(|c| c.id == clip_id) {
+                                            clip_track_id = Some(track.id);
+                                            break;
+                                        }
+                                    }
+                                    if let Some(track_id) = clip_track_id {
+                                        self.execute_command(TrackEditorCommand::MoveClip {
+                                            clip_id,
+                                            new_track_id: track_id,
+                                            new_start: clamped_start_time,
+                                        });
+                                    }
+                                }
+                            }
+                        } else {
+                            // 调整结束时间（持续时间）
+                            let new_duration = self.timeline.tick_to_time(snapped_end as u64) - clip.start_time;
+                            
+                            self.execute_command(TrackEditorCommand::ResizeClip {
+                                clip_id,
+                                new_duration: new_duration.max(0.01),
+                                resize_from_start: false,
+                            });
+                        }
                         break;
                     }
                 }
@@ -538,20 +751,43 @@ impl TrackEditor {
     }
 
     fn update_selection_from_box(&mut self) {
-        // Selection box update is now handled per-track in ui_track method
-        // This method is kept for compatibility but does nothing
+        if let (Some(start), Some(end)) = (self.selection_box_start, self.selection_box_end) {
+            let box_rect = Rect::from_two_pos(start, end);
+            
+            // Clear selection if not holding Ctrl
+            // (This would need to track initial modifiers, simplified for now)
+            
+            // Select clips that intersect with selection box
+            for track in &self.tracks {
+                for clip in &track.clips {
+                    // 使用基于 tick 的坐标计算（与 MIDI 编辑器一致）
+                    let clip_start_tick = self.timeline.time_to_tick(clip.start_time);
+                    let clip_end_tick = self.timeline.time_to_tick(clip.start_time + clip.duration);
+                    let clip_center_tick = clip_start_tick + (clip_end_tick - clip_start_tick) / 2;
+                    let clip_x = self.timeline.tick_to_x(clip_center_tick, self.options.track_header_width);
+                    let clip_y = track.height / 2.0; // Approximate
+                    let clip_pos = Pos2::new(clip_x, clip_y);
+                    
+                    if box_rect.contains(clip_pos) {
+                        self.selected_clips.insert(clip.id);
+                    }
+                }
+            }
+        }
     }
 
     // Command implementations
     fn create_clip(&mut self, track_id: TrackId, start: f64, duration: f64, clip_type: ClipType) {
         if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+            // 限制：不允许将剪辑创建到小于 0 的位置
+            let clamped_start = start.max(0.0);
             let name = match &clip_type {
                 ClipType::Midi { .. } => "MIDI Clip".to_string(),
                 ClipType::Audio { .. } => "Audio Clip".to_string(),
             };
             let clip = match clip_type {
-                ClipType::Midi { .. } => Clip::new_midi(track_id, start, duration, name),
-                ClipType::Audio { .. } => Clip::new_audio(track_id, start, duration, name),
+                ClipType::Midi { .. } => Clip::new_midi(track_id, clamped_start, duration, name),
+                ClipType::Audio { .. } => Clip::new_audio(track_id, clamped_start, duration, name),
             };
             track.clips.push(clip);
         }
@@ -579,8 +815,10 @@ impl TrackEditor {
 
         if let Some(mut clip) = clip {
             // Update clip position
+            // 限制：不允许将剪辑移动到小于 0 的位置
+            let clamped_start = new_start.max(0.0);
             clip.track_id = new_track_id;
-            clip.start_time = self.timeline.snap_time(new_start);
+            clip.start_time = self.timeline.snap_time(clamped_start);
 
             // Add to new track
             if let Some(track) = self.tracks.iter_mut().find(|t| t.id == new_track_id) {
@@ -595,7 +833,9 @@ impl TrackEditor {
                 let snapped_duration = self.timeline.snap_time(new_duration).max(0.1);
                 if resize_from_start {
                     let old_start = clip.start_time;
-                    clip.start_time = self.timeline.snap_time(old_start + clip.duration - snapped_duration);
+                    let new_start = self.timeline.snap_time(old_start + clip.duration - snapped_duration);
+                    // 限制：不允许将剪辑调整到小于 0 的位置
+                    clip.start_time = new_start.max(0.0);
                 }
                 clip.duration = snapped_duration;
                 self.emit_event(TrackEditorEvent::ClipResized {

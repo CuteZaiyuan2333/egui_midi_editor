@@ -38,113 +38,94 @@ impl Timeline {
     }
 
     fn draw_time_markers(&self, painter: &Painter, rect: Rect) {
-        let start_time = self.state.scroll_x;
-        let end_time = start_time + (rect.width() as f64 / self.state.zoom_x as f64);
-        
-        // Calculate major and minor intervals
-        let seconds_per_pixel = 1.0 / self.state.zoom_x as f64;
-        let major_interval = self.calculate_major_interval(seconds_per_pixel);
-        let minor_interval = major_interval / 4.0;
+        // 使用基于节拍的坐标系统（与 MIDI 编辑器一致）
+        let tpb = self.state.ticks_per_beat.max(1) as u64;
+        let denom = self.state.time_signature.1.max(1) as u64;
+        let numer = self.state.time_signature.0.max(1) as u64;
+        let ticks_per_measure = (tpb * numer * 4).saturating_div(denom).max(tpb);
 
-        // Draw minor markers
-        let mut time = (start_time / minor_interval).floor() * minor_interval;
-        while time <= end_time {
-            let x = self.state.time_to_x(time) + self.header_width;
-            if x >= rect.min.x && x <= rect.max.x {
-                painter.line_segment(
-                    [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                    Stroke::new(1.0, Color32::from_gray(60)),
-                );
-            }
-            time += minor_interval;
+        // 计算可见的节拍范围
+        let visible_beats_start = (-self.state.manual_scroll_x / self.state.zoom_x).floor();
+        let visible_beats_end = visible_beats_start + (rect.width() / self.state.zoom_x) + 2.0;
+        let mut start_tick = (visible_beats_start * tpb as f32).floor() as i64;
+        if start_tick < 0 {
+            start_tick = 0;
+        }
+        let end_tick = (visible_beats_end * tpb as f32).ceil() as i64;
+
+        // 计算网格线的 x 坐标偏移
+        let note_offset_x = self.header_width + self.state.manual_scroll_x;
+
+        // 绘制时间标记（在小节线和拍线上）
+        let mut tick = (start_tick / ticks_per_measure as i64) * ticks_per_measure as i64;
+        if tick < 0 {
+            tick = 0;
         }
 
-        // Draw major markers with labels
-        let mut time = (start_time / major_interval).floor() * major_interval;
-        while time <= end_time {
-            let x = self.state.time_to_x(time) + self.header_width;
+        while tick <= end_tick {
+            let x = note_offset_x + (tick as f32 / tpb as f32) * self.state.zoom_x;
             if x >= rect.min.x && x <= rect.max.x {
-                // Draw thicker line
-                painter.line_segment(
-                    [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                    Stroke::new(2.0, Color32::from_gray(80)),
-                );
-
-                // Draw time label
-                let label = self.format_time(time);
-                painter.text(
-                    Pos2::new(x + 4.0, rect.min.y + 16.0),
-                    Align2::LEFT_TOP,
-                    label,
-                    FontId::proportional(12.0),
-                    Color32::WHITE,
-                );
+                // 判断是小节线还是拍线
+                if tick as u64 % ticks_per_measure == 0 {
+                    // 小节线：绘制小节标记
+                    let measure = (tick as u64 / ticks_per_measure) as u32;
+                    let label = format!("{}:1", measure + 1);
+                    painter.text(
+                        Pos2::new(x + 4.0, rect.min.y + 16.0),
+                        Align2::LEFT_TOP,
+                        label,
+                        FontId::proportional(12.0),
+                        Color32::WHITE,
+                    );
+                } else if tick as u64 % tpb == 0 {
+                    // 拍线：绘制拍标记
+                    let beat_in_measure = ((tick as u64 % ticks_per_measure) / tpb) as u32 + 1;
+                    let measure = (tick as u64 / ticks_per_measure) as u32;
+                    let label = format!("{}:{}", measure + 1, beat_in_measure);
+                    painter.text(
+                        Pos2::new(x + 4.0, rect.min.y + 16.0),
+                        Align2::LEFT_TOP,
+                        label,
+                        FontId::proportional(11.0),
+                        Color32::from_gray(200),
+                    );
+                }
             }
-            time += major_interval;
+            // 移动到下一个可能的标记位置（小节或拍）
+            if tick as u64 % ticks_per_measure == 0 {
+                tick += ticks_per_measure as i64;
+            } else if tick as u64 % tpb == 0 {
+                tick += tpb as i64;
+            } else {
+                tick += tpb as i64;
+            }
         }
     }
 
     fn draw_playhead(&self, painter: &Painter, rect: Rect) {
-        let x = self.state.time_to_x(self.state.playhead_position) + self.header_width;
+        // 使用基于 tick 的坐标转换（与 MIDI 编辑器一致）
+        let playhead_tick = self.state.time_to_tick(self.state.playhead_position);
+        let x = self.state.tick_to_x(playhead_tick, self.header_width);
         if x >= rect.min.x && x <= rect.max.x {
+            // 使用与 MIDI 编辑器一致的样式：半透明蓝色，宽度 2.0
             painter.line_segment(
                 [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                Stroke::new(2.0, Color32::from_rgb(255, 100, 100)),
+                Stroke::new(2.0, Color32::from_rgba_premultiplied(100, 200, 255, 128)),
             );
         }
     }
 
     fn draw_grid_lines(&self, painter: &Painter, rect: Rect) {
-        if !self.state.snap_enabled {
-            return;
-        }
-
-        let start_time = self.state.scroll_x;
-        let end_time = start_time + (rect.width() as f64 / self.state.zoom_x as f64);
-        let mut time = (start_time / self.state.snap_interval).floor() * self.state.snap_interval;
-
-        while time <= end_time {
-            let x = self.state.time_to_x(time) + self.header_width;
-            if x >= rect.min.x && x <= rect.max.x {
-                painter.line_segment(
-                    [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                    Stroke::new(0.5, Color32::from_gray(50)),
-                );
-            }
-            time += self.state.snap_interval;
-        }
+        // 使用统一的网格绘制函数，确保与轨道网格对齐
+        crate::ui::renderer::draw_unified_grid(
+            painter,
+            rect.min.y,
+            rect.max.y,
+            &self.state,
+            self.header_width,
+            rect.min.x,
+            rect.max.x,
+        );
     }
 
-    fn calculate_major_interval(&self, seconds_per_pixel: f64) -> f64 {
-        // Calculate appropriate major interval based on zoom level
-        let target_pixels_between_markers = 100.0;
-        let target_interval = seconds_per_pixel * target_pixels_between_markers;
-
-        // Round to nice values: 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, etc.
-        let magnitude = 10.0_f64.powf(target_interval.log10().floor());
-        let normalized = target_interval / magnitude;
-
-        let nice_value = if normalized <= 0.15 {
-            0.1
-        } else if normalized <= 0.35 {
-            0.25
-        } else if normalized <= 0.75 {
-            0.5
-        } else if normalized <= 1.5 {
-            1.0
-        } else if normalized <= 3.5 {
-            2.0
-        } else {
-            5.0
-        };
-
-        nice_value * magnitude
-    }
-
-    fn format_time(&self, time: f64) -> String {
-        let minutes = (time / 60.0) as u32;
-        let seconds = time as u32 % 60;
-        let milliseconds = ((time % 1.0) * 1000.0) as u32;
-        format!("{:02}:{:02}.{:03}", minutes, seconds, milliseconds)
-    }
 }

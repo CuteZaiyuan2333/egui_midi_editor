@@ -42,6 +42,20 @@ pub enum TrackEditorCommand {
     SetPlayhead {
         position: f64,
     },
+    SetTimeSignature {
+        numer: u8,
+        denom: u8,
+    },
+    SetBPM {
+        bpm: f32,
+    },
+    SetMetronome {
+        enabled: bool,
+    },
+    SetPlayback {
+        is_playing: bool,
+    },
+    StopPlayback,
 }
 
 #[derive(Clone, Debug)]
@@ -70,5 +84,18 @@ pub enum TrackEditorEvent {
     },
     TrackDeleted {
         track_id: TrackId,
+    },
+    TimeSignatureChanged {
+        numer: u8,
+        denom: u8,
+    },
+    BPMChanged {
+        bpm: f32,
+    },
+    MetronomeChanged {
+        enabled: bool,
+    },
+    PlaybackStateChanged {
+        is_playing: bool,
     },
 }

@@ -33,34 +33,85 @@ pub fn draw_selection_box(painter: &Painter, rect: Rect) {
     );
 }
 
-/// 绘制时间网格线
-#[allow(dead_code)]
-pub fn draw_timeline_grid(
+/// 绘制统一的时间网格线（用于时间轴和所有轨道）
+/// 直接复用 MIDI 编辑器的网格绘制逻辑，确保时间轴和轨道使用完全相同的网格系统
+pub fn draw_unified_grid(
     painter: &Painter,
-    rect: Rect,
-    start_time: f64,
-    end_time: f64,
-    zoom_x: f32,
-    snap_interval: f64,
+    grid_top: f32,
+    grid_bottom: f32,
+    timeline: &crate::structure::TimelineState,
     header_width: f32,
+    visible_start_x: f32,
+    visible_end_x: f32,
 ) {
-    if snap_interval <= 0.0 {
-        return;
+    // 使用与 MIDI 编辑器完全相同的网格计算逻辑
+    let tpb = timeline.ticks_per_beat.max(1) as u64;
+    let denom = timeline.time_signature.1.max(1) as u64;
+    let numer = timeline.time_signature.0.max(1) as u64;
+    let ticks_per_measure = (tpb * numer * 4).saturating_div(denom).max(tpb);
+
+    // 计算可见的节拍范围
+    let visible_beats_start = (-timeline.manual_scroll_x / timeline.zoom_x).floor();
+    let visible_beats_end = visible_beats_start + ((visible_end_x - visible_start_x) / timeline.zoom_x) + 2.0;
+    let mut start_tick = (visible_beats_start * tpb as f32).floor() as i64;
+    if start_tick < 0 {
+        start_tick = 0;
+    }
+    let end_tick = (visible_beats_end * tpb as f32).ceil() as i64;
+
+    // 根据缩放级别自动调整细分级别（与 MIDI 编辑器一致）
+    let subdivision = if timeline.zoom_x >= 220.0 {
+        8
+    } else if timeline.zoom_x >= 90.0 {
+        4
+    } else if timeline.zoom_x >= 45.0 {
+        2
+    } else {
+        1
+    };
+    let tick_step = (tpb / subdivision).max(1);
+
+    // 网格线颜色（与 MIDI 编辑器一致）
+    let measure_line_color = Color32::from_rgb(210, 210, 210);  // 小节线：较亮的灰色
+    let beat_line_color = Color32::from_rgb(140, 140, 140);    // 拍线：中等灰色
+    let subdivision_color = Color32::from_rgb(90, 90, 90);     // 细分线：较暗的灰色
+
+    // 计算网格线的 x 坐标偏移（考虑 header_width 和 manual_scroll_x）
+    let note_offset_x = header_width + timeline.manual_scroll_x;
+
+    // 绘制垂直网格线
+    let mut tick = (start_tick / tick_step as i64) * tick_step as i64;
+    if tick < 0 {
+        tick = 0;
     }
 
-    let mut time = (start_time / snap_interval).floor() * snap_interval;
-    while time <= end_time {
-        let x = ((time - start_time) * zoom_x as f64) as f32 + header_width;
-        if x >= rect.min.x && x <= rect.max.x {
-            draw_dashed_vertical_line(
-                painter,
-                x,
-                rect.min.y,
-                rect.max.y,
-                Stroke::new(0.5, Color32::from_gray(50)),
-            );
+    while tick <= end_tick {
+        let x = note_offset_x + (tick as f32 / tpb as f32) * timeline.zoom_x;
+        if x >= visible_start_x && x <= visible_end_x {
+            if tick as u64 % ticks_per_measure == 0 {
+                // 小节线：实线，较粗
+                painter.line_segment(
+                    [Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)],
+                    Stroke::new(1.0, measure_line_color),
+                );
+            } else if tick as u64 % tpb == 0 {
+                // 拍线：实线
+                painter.line_segment(
+                    [Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)],
+                    Stroke::new(1.0, beat_line_color),
+                );
+            } else {
+                // 细分线：虚线
+                draw_dashed_vertical_line(
+                    painter,
+                    x,
+                    grid_top,
+                    grid_bottom,
+                    Stroke::new(1.0, subdivision_color),
+                );
+            }
         }
-        time += snap_interval;
+        tick += tick_step as i64;
     }
 }
 
@@ -82,60 +133,4 @@ pub fn draw_note_rect(
         2.0,
         Stroke::new(stroke_width, Color32::WHITE),
     );
-}
-
-/// 在轨道内容区域绘制垂直网格线
-/// 参考 egui_midi 的网格绘制逻辑，但适配时间轴（秒）而非节拍
-pub fn draw_track_grid(
-    painter: &Painter,
-    rect: Rect,
-    timeline: &crate::structure::TimelineState,
-    header_width: f32,
-) {
-    if !timeline.snap_enabled || timeline.snap_interval <= 0.0 {
-        return;
-    }
-
-    let start_time = timeline.scroll_x;
-    let end_time = start_time + (rect.width() as f64 / timeline.zoom_x as f64);
-    
-    // 计算主网格间隔（snap_interval）和次网格间隔
-    let major_interval = timeline.snap_interval;
-    let minor_interval = major_interval / 4.0; // 将主间隔分成4份作为次网格
-    
-    // 定义颜色
-    let major_line_color = Color32::from_rgb(140, 140, 140);
-    let minor_line_color = Color32::from_rgb(90, 90, 90);
-    
-    // 绘制次网格线（虚线）
-    let mut time = (start_time / minor_interval).floor() * minor_interval;
-    while time <= end_time {
-        let x = timeline.time_to_x(time) + header_width;
-        if x >= rect.min.x && x <= rect.max.x {
-            // 只在不是主网格线位置时绘制次网格线
-            if (time % major_interval).abs() > 0.001 {
-                draw_dashed_vertical_line(
-                    painter,
-                    x,
-                    rect.min.y,
-                    rect.max.y,
-                    Stroke::new(0.5, minor_line_color),
-                );
-            }
-        }
-        time += minor_interval;
-    }
-    
-    // 绘制主网格线（实线，较粗）
-    let mut time = (start_time / major_interval).floor() * major_interval;
-    while time <= end_time {
-        let x = timeline.time_to_x(time) + header_width;
-        if x >= rect.min.x && x <= rect.max.x {
-            painter.line_segment(
-                [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                Stroke::new(1.0, major_line_color),
-            );
-        }
-        time += major_interval;
-    }
 }
