@@ -126,7 +126,7 @@ This library focuses on **single-track MIDI editing** and is designed to serve a
 
 ## 🏗️ Architecture
 
-The project is organized as a Rust workspace with two main components:
+The project is organized as a Rust workspace with multiple components:
 
 ### `egui_midi` (Library)
 Core MIDI editor library containing:
@@ -134,8 +134,25 @@ Core MIDI editor library containing:
 - **audio.rs**: Audio engine with polyphonic synthesis and ADSR envelopes
 - **ui/mod.rs**: Complete egui-based MIDI editor interface
 
+### `egui_track` (Library)
+Multi-track timeline editor library for DAW-style clip arrangement:
+- **structure.rs**: Track, clip, and timeline data structures
+- **editor.rs**: Command/event system for editor operations
+- **ui/mod.rs**: Complete egui-based track editor interface with:
+  - Multi-track management (create, delete, rename tracks)
+  - Clip editing (create, move, resize, rename clips)
+  - Track panel with mute, solo, record arm, monitor controls
+  - Volume and pan sliders per track
+  - Snap-to-grid with configurable intervals
+  - Playhead positioning and playback control
+  - Project file I/O support
+- **project.rs**: Project file format for saving/loading track arrangements
+
 ### `example_app` (Demo Application)
-A demonstration application showcasing the library's capabilities with a functional MIDI editor interface.
+A demonstration application showcasing the MIDI editor library's capabilities with a functional MIDI editor interface.
+
+### `egui_track_example` (Demo Application)
+A demonstration application showcasing the track editor library with a functional multi-track timeline interface. This example application serves as the foundation for future development, where we plan to build a simple DAW software that integrates both the MIDI editor (`egui_midi`) and track editor (`egui_track`) plugins into a unified digital audio workstation.
 
 ## 🚀 Quick Start
 
@@ -152,10 +169,14 @@ cd egui_midi_editor
 # Build the project
 cargo build --release
 
-# Run the example application
+# Run the MIDI editor example application
 cargo run --release -p example_app
 
-# Note: the demo opens/saves `.aquamidi` single-track projects and can export standard `.mid` files.
+# Run the track editor example application
+cargo run --release -p egui_track_example
+
+# Note: The MIDI editor demo opens/saves `.aquamidi` single-track projects and can export standard `.mid` files.
+# The track editor demo supports project file I/O for multi-track arrangements.
 ```
 
 ## 🎹 Usage
@@ -391,19 +412,36 @@ impl PlaybackBackend for DawAudioBackend {
 ### Project Structure
 ```
 egui_midi_editor/
-├── Cargo.toml              # Workspace configuration
-├── egui_midi/              # Core library (for integration)
+├── Cargo.toml                  # Workspace configuration
+├── egui_midi/                  # MIDI editor library
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs          # Public API
-│       ├── structure.rs    # MIDI data structures and file I/O
-│       ├── audio.rs        # Audio engine (optional preview)
+│       ├── lib.rs             # Public API
+│       ├── structure.rs       # MIDI data structures and file I/O
+│       ├── audio.rs           # Audio engine (optional preview)
 │       └── ui/
-│           └── mod.rs      # UI components
-└── example_app/            # Demo application
+│           └── mod.rs          # UI components
+├── egui_track/                 # Track editor library
+│   ├── Cargo.toml
+│   ├── README.md               # Track editor documentation
+│   └── src/
+│       ├── lib.rs             # Public API
+│       ├── structure.rs       # Track, clip, timeline structures
+│       ├── editor.rs          # Command/event system
+│       ├── project.rs         # Project file I/O
+│       └── ui/
+│           ├── mod.rs          # Main UI components
+│           ├── toolbar.rs      # Toolbar UI
+│           ├── statusbar.rs   # Status bar UI
+│           └── clip.rs         # Clip rendering
+├── example_app/                # MIDI editor demo application
+│   ├── Cargo.toml
+│   └── src/
+│       └── main.rs            # MIDI editor example
+└── egui_track_example/        # Track editor demo application
     ├── Cargo.toml
     └── src/
-        └── main.rs         # Example integration
+        └── main.rs             # Track editor example
 ```
 
 ### Key Dependencies
@@ -429,6 +467,91 @@ We welcome contributions that improve:
 - **Editing Tools**: Advanced editing capabilities
 - **Performance**: Optimizations for large MIDI files
 - **Code Quality**: Cleaner code, better error handling
+
+## 🎼 Track Editor (`egui_track`)
+
+The `egui_track` library provides a multi-track timeline editor for arranging MIDI and audio clips in a DAW-style interface.
+
+### Track Editor Features
+
+#### Multi-Track Management
+- ✅ Create, delete, and rename tracks
+- ✅ Track panel with interactive controls:
+  - Mute, Solo, Record Arm, Monitor buttons
+  - Volume slider (with dB display)
+  - Pan slider (with L/C/R indicators)
+  - Collapsible Inserts and Sends sections
+- ✅ Right-click context menu for track operations
+
+#### Clip Editing
+- ✅ Create, move, resize, and delete clips
+- ✅ Clip renaming via double-click on title bar
+- ✅ Multi-select support (Ctrl/Cmd + click, Shift + click)
+- ✅ Box selection for multiple clips
+- ✅ Snap-to-grid with configurable intervals (1/16, 1/8, 1/4, 1 Beat)
+- ✅ Alt key to temporarily disable snapping
+- ✅ Clip types: MIDI clips and Audio clips
+- ✅ Visual clip preview with title bars
+
+#### Timeline & Transport
+- ✅ Playhead positioning and playback control
+- ✅ BPM and time signature settings
+- ✅ Horizontal and vertical zoom (Ctrl/Alt + mouse wheel)
+- ✅ Middle mouse button drag for panning
+- ✅ Scroll limits with proper boundaries
+- ✅ Visual grid system aligned with MIDI editor
+
+#### Project Management
+- ✅ Project file format for saving/loading arrangements
+- ✅ Track and clip state persistence
+- ✅ Timeline state (BPM, time signature, zoom, scroll) persistence
+
+#### User Interface
+- ✅ Toolbar with transport controls and snap settings
+- ✅ Status bar with project information
+- ✅ File menu (New, Open, Save, Save As, Export)
+- ✅ All UI text in English
+
+### Track Editor Usage
+
+```rust
+use egui_track::{TrackEditor, TrackEditorOptions, TrackEditorCommand, ClipType};
+
+// Create track editor
+let mut editor = TrackEditor::new(TrackEditorOptions::default());
+
+// Create a track
+editor.execute_command(TrackEditorCommand::CreateTrack {
+    name: "Track 1".to_string(),
+});
+
+// Create a MIDI clip
+editor.execute_command(TrackEditorCommand::CreateClip {
+    track_id: some_track_id,
+    start: 0.0,
+    duration: 4.0,
+    clip_type: ClipType::Midi { midi_data: None },
+});
+
+// Render in UI
+editor.ui(ui);
+```
+
+### Track Editor Example Application
+
+The `egui_track_example` application demonstrates the track editor library with a complete multi-track timeline interface. It includes:
+
+- Full track editor UI with toolbar and status bar
+- Project file management (New, Open, Save, Save As)
+- Track and clip creation/editing
+- All track panel controls and interactions
+
+**Future Plans**: The track editor example application will serve as the foundation for building a simple DAW software that integrates both the MIDI editor (`egui_midi`) and track editor (`egui_track`) plugins. This unified DAW will allow users to:
+
+- Arrange multiple tracks with MIDI and audio clips
+- Double-click MIDI clips to open them in the MIDI editor for detailed note editing
+- Seamlessly switch between timeline arrangement and MIDI note editing
+- Export complete multi-track projects
 
 ## 📋 Roadmap
 

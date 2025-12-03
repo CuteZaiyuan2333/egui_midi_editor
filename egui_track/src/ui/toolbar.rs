@@ -143,6 +143,45 @@ impl Toolbar {
             if ui.checkbox(&mut metronome, "Metronome").changed() {
                 command_callback(TrackEditorCommand::SetMetronome { enabled: metronome });
             }
+
+            ui.separator();
+
+            // Snap settings
+            let mut snap_enabled = self.timeline.snap_enabled;
+            if ui.checkbox(&mut snap_enabled, "Snap").changed() {
+                command_callback(TrackEditorCommand::SetSnapEnabled { enabled: snap_enabled });
+            }
+
+            if snap_enabled {
+                ui.label("Interval:");
+                // 计算常见的吸附精度选项（以 tick 为单位）
+                let ticks_per_beat = self.timeline.ticks_per_beat as u64;
+                let common_intervals = vec![
+                    (ticks_per_beat / 4, "1/16"),
+                    (ticks_per_beat / 2, "1/8"),
+                    (ticks_per_beat, "1/4"),
+                    (ticks_per_beat * 2, "1/2"),
+                    (ticks_per_beat * 4, "1"),
+                ];
+                
+                let current_interval = self.timeline.snap_interval;
+                let mut selected_index = common_intervals.iter()
+                    .position(|(interval, _)| *interval == current_interval)
+                    .unwrap_or(2); // 默认选择 1/4
+                
+                egui::ComboBox::from_id_salt("snap_interval")
+                    .selected_text(common_intervals[selected_index].1)
+                    .show_ui(ui, |ui| {
+                        for (idx, (interval, label)) in common_intervals.iter().enumerate() {
+                            if ui.selectable_label(idx == selected_index, *label).clicked() {
+                                selected_index = idx;
+                                command_callback(TrackEditorCommand::SetSnapInterval { 
+                                    interval: *interval 
+                                });
+                            }
+                        }
+                    });
+            }
         });
     }
 }

@@ -144,6 +144,12 @@ pub struct Track {
     pub muted: bool,
     pub solo: bool,
     pub volume: f32,
+    pub pan: f32,              // 声像控制（-1.0 到 1.0，0.0 为居中）
+    pub record_arm: bool,      // 录音准备状态
+    pub input: Option<String>, // 输入源选择（可选）
+    pub monitor: bool,         // 监听开关
+    pub inserts: Vec<String>,  // 插入效果器列表（显示名称）
+    pub sends: Vec<(String, f32)>, // 发送列表（总线名称 + 发送量 0.0-1.0）
     pub clips: Vec<Clip>,
 }
 
@@ -156,6 +162,12 @@ impl Track {
             muted: false,
             solo: false,
             volume: 1.0,
+            pan: 0.0,
+            record_arm: false,
+            input: None,
+            monitor: false,
+            inserts: Vec::new(),
+            sends: Vec::new(),
             clips: Vec::new(),
         }
     }
@@ -164,8 +176,8 @@ impl Track {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimelineState {
     pub zoom_x: f32,           // 水平缩放（像素/节拍，与 MIDI 编辑器一致）
+    pub zoom_y: f32,           // 垂直缩放（每个轨道的高度，像素，与 MIDI 编辑器一致）
     pub scroll_x: f64,         // 水平滚动位置（节拍）
-    pub scroll_y: f32,         // 垂直滚动位置
     pub manual_scroll_x: f32,  // 手动水平滚动偏移（像素，与 MIDI 编辑器一致）
     pub manual_scroll_y: f32,  // 手动垂直滚动偏移（像素，与 MIDI 编辑器一致）
     pub playhead_position: f64, // 播放头位置（秒，用于播放控制）
@@ -187,8 +199,8 @@ impl Default for TimelineState {
     fn default() -> Self {
         Self {
             zoom_x: 100.0,      // 100 像素/节拍
+            zoom_y: 96.0,        // 96 像素/轨道（默认轨道高度，80.0 * 1.2）
             scroll_x: 0.0,       // 0 节拍
-            scroll_y: 0.0,
             manual_scroll_x: 0.0,
             manual_scroll_y: 0.0,
             playhead_position: 0.0,  // 0 秒

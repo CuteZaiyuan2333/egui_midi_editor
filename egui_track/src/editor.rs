@@ -19,15 +19,21 @@ pub enum TrackEditorCommand {
         clip_id: ClipId,
         new_track_id: TrackId,
         new_start: f64,
+        disable_snap: bool,
     },
     ResizeClip {
         clip_id: ClipId,
         new_duration: f64,
         resize_from_start: bool,
+        disable_snap: bool,
     },
     SplitClip {
         clip_id: ClipId,
         split_time: f64,
+    },
+    RenameClip {
+        clip_id: ClipId,
+        new_name: String,
     },
     CreateTrack {
         name: String,
@@ -52,10 +58,40 @@ pub enum TrackEditorCommand {
     SetMetronome {
         enabled: bool,
     },
+    SetSnapEnabled {
+        enabled: bool,
+    },
+    SetSnapInterval {
+        interval: u64,
+    },
     SetPlayback {
         is_playing: bool,
     },
     StopPlayback,
+    SetTrackMute {
+        track_id: TrackId,
+        muted: bool,
+    },
+    SetTrackSolo {
+        track_id: TrackId,
+        solo: bool,
+    },
+    SetTrackVolume {
+        track_id: TrackId,
+        volume: f32,
+    },
+    SetTrackPan {
+        track_id: TrackId,
+        pan: f32,
+    },
+    SetTrackRecordArm {
+        track_id: TrackId,
+        armed: bool,
+    },
+    SetTrackMonitor {
+        track_id: TrackId,
+        monitor: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +112,10 @@ pub enum TrackEditorEvent {
         clip_id: ClipId,
         new_duration: f64,
     },
+    ClipRenamed {
+        clip_id: ClipId,
+        new_name: String,
+    },
     PlayheadChanged {
         position: f64,
     },
@@ -95,7 +135,37 @@ pub enum TrackEditorEvent {
     MetronomeChanged {
         enabled: bool,
     },
+    SnapEnabledChanged {
+        enabled: bool,
+    },
+    SnapIntervalChanged {
+        interval: u64,
+    },
     PlaybackStateChanged {
         is_playing: bool,
+    },
+    TrackMuteChanged {
+        track_id: TrackId,
+        muted: bool,
+    },
+    TrackSoloChanged {
+        track_id: TrackId,
+        solo: bool,
+    },
+    TrackVolumeChanged {
+        track_id: TrackId,
+        volume: f32,
+    },
+    TrackPanChanged {
+        track_id: TrackId,
+        pan: f32,
+    },
+    TrackRecordArmChanged {
+        track_id: TrackId,
+        armed: bool,
+    },
+    TrackMonitorChanged {
+        track_id: TrackId,
+        monitor: bool,
     },
 }

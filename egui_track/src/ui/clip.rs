@@ -2,6 +2,7 @@ use crate::structure::{Clip, TimelineState};
 use crate::ui::TrackEditorOptions;
 use egui::*;
 
+#[allow(dead_code)]
 pub struct ClipRenderer {
     clip: Clip,
     timeline: TimelineState,
@@ -11,6 +12,7 @@ pub struct ClipRenderer {
 }
 
 impl ClipRenderer {
+    #[allow(dead_code)]
     pub fn new(clip: &Clip, timeline: &TimelineState, options: &TrackEditorOptions, header_width: f32) -> Self {
         Self {
             clip: clip.clone(),
@@ -21,10 +23,12 @@ impl ClipRenderer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn set_selected(&mut self, selected: bool) {
         self.is_selected = selected;
     }
 
+    #[allow(dead_code)]
     pub fn render(&self, painter: &Painter, track_y: f32) {
         // 使用基于 tick 的坐标系统（与 MIDI 编辑器一致）
         let start_tick = self.timeline.time_to_tick(self.clip.start_time);
@@ -79,6 +83,7 @@ impl ClipRenderer {
         }
     }
 
+    #[allow(dead_code)]
     fn render_midi_preview(
         &self,
         painter: &Painter,
@@ -112,6 +117,7 @@ impl ClipRenderer {
         }
     }
 
+    #[allow(dead_code)]
     fn render_audio_waveform(
         &self,
         painter: &Painter,
@@ -155,6 +161,7 @@ impl ClipRenderer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn hit_test(&self, pos: Pos2, track_y: f32) -> Option<ClipHitRegion> {
         // 使用基于 tick 的坐标系统计算剪辑位置
         let start_tick = self.timeline.time_to_tick(self.clip.start_time);
