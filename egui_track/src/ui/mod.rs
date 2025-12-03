@@ -4,7 +4,6 @@
 
 mod clip;
 mod toolbar;
-mod statusbar;
 
 use crate::editor::{TrackEditorCommand, TrackEditorEvent};
 use crate::structure::{Track, Clip, TrackId, ClipId, TimelineState, ClipType};
@@ -13,11 +12,45 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::cell::RefCell;
 
+// UI 常量
+const CLIP_TITLE_BAR_HEIGHT: f32 = 18.0;
+const CLIP_TITLE_BAR_MIN_HEIGHT: f32 = 4.0;
+const CLIP_EDGE_THRESHOLD: f32 = 5.0;
+const TRACK_BUTTON_SIZE: f32 = 18.0;
+const TRACK_MONITOR_BUTTON_WIDTH: f32 = 26.0;
+const TRACK_VOLUME_SLIDER_WIDTH: f32 = 33.75;
+const TRACK_PAN_SLIDER_WIDTH: f32 = 22.5;
+const TRACK_CONTROL_SLIDER_HEIGHT: f32 = 20.0;
+const TRACK_CONTEXT_MENU_THRESHOLD: f32 = 5.0;
+const TIMELINE_MEASURE_LABEL_OFFSET_X: f32 = 4.0;
+const TIMELINE_MEASURE_LABEL_OFFSET_Y: f32 = 15.0;
+const TIMELINE_MEASURE_LINE_OFFSET: f32 = 5.0;
+
+/// 音轨编辑器的配置选项
+///
+/// 用于自定义编辑器的外观和行为。
+///
+/// # 示例
+///
+/// ```rust
+/// use egui_track::TrackEditorOptions;
+///
+/// let options = TrackEditorOptions {
+///     default_track_height: 100.0,
+///     min_clip_width: 30.0,
+///     track_header_width: 250.0,
+///     timeline_height: 40.0,
+/// };
+/// ```
 #[derive(Clone)]
 pub struct TrackEditorOptions {
+    /// 默认轨道高度（像素）
     pub default_track_height: f32,
+    /// 剪辑的最小宽度（像素）
     pub min_clip_width: f32,
+    /// 轨道标题栏的宽度（像素）
     pub track_header_width: f32,
+    /// 时间轴的高度（像素）
     pub timeline_height: f32,
 }
 
@@ -53,10 +86,6 @@ pub struct TrackEditor {
     selection_box_end: Option<Pos2>,
     is_panning: bool,
     pan_start_pos: Option<Pos2>,
-    #[allow(dead_code)]
-    pan_start_scroll_x: Option<f64>,
-    #[allow(dead_code)]
-    pan_start_scroll_y: Option<f32>,
     
     // Editor state
     metronome_enabled: bool,
@@ -76,12 +105,6 @@ enum DragAction {
     MoveClip,
     ResizeClipStart,
     ResizeClipEnd,
-    #[allow(dead_code)]
-    CreateClip,
-    #[allow(dead_code)]
-    SelectBox,
-    #[allow(dead_code)]
-    Pan,
     PlayheadSeek,
 }
 
@@ -91,18 +114,6 @@ impl TrackEditor {
         timeline_height + (track_index as f32 * self.timeline.zoom_y) + self.timeline.manual_scroll_y
     }
 
-    /// 将 y 坐标转换为轨道索引（参考 MIDI 编辑器的 pointer_to_key）
-    #[allow(dead_code)]
-    fn y_to_track(&self, y: f32, timeline_height: f32) -> Option<usize> {
-        let keyboard_top = timeline_height + self.timeline.manual_scroll_y;
-        let rel_y = y - keyboard_top;
-        let track_index = (rel_y / self.timeline.zoom_y).floor() as usize;
-        if track_index < self.tracks.len() {
-            Some(track_index)
-        } else {
-            None
-        }
-    }
 
     /// 绘制虚线垂直线的工具函数（从 MIDI 编辑器复制）
     fn draw_dashed_vertical_line(painter: &Painter, x: f32, top: f32, bottom: f32, stroke: Stroke) {
@@ -116,18 +127,6 @@ impl TrackEditor {
         }
     }
 
-    /// 绘制选择框（从 renderer.rs 移动过来）
-    #[allow(dead_code)]
-    fn draw_selection_box(painter: &Painter, rect: Rect) {
-        // Draw filled semi-transparent background
-        painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(100, 150, 255, 50));
-        // Draw border
-        painter.rect_stroke(
-            rect,
-            0.0,
-            Stroke::new(2.0, Color32::from_rgb(100, 150, 255)),
-        );
-    }
 
     pub fn new(options: TrackEditorOptions) -> Self {
         Self {
@@ -149,8 +148,6 @@ impl TrackEditor {
             selection_box_end: None,
             is_panning: false,
             pan_start_pos: None,
-            pan_start_scroll_x: None,
-            pan_start_scroll_y: None,
             metronome_enabled: false,
             is_playing: false,
             last_update: 0.0,
@@ -159,14 +156,83 @@ impl TrackEditor {
         }
     }
 
+    /// 设置事件监听器
+    ///
+    /// 当编辑器发生事件时，会调用此监听器。
+    ///
+    /// # 参数
+    ///
+    /// * `listener` - 事件回调函数
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use egui_track::{TrackEditor, TrackEditorOptions, TrackEditorEvent};
+    ///
+    /// let mut editor = TrackEditor::new(TrackEditorOptions::default());
+    /// editor.set_event_listener(Box::new(|event| {
+    ///     match event {
+    ///         TrackEditorEvent::ClipSelected { clip_id } => {
+    ///             println!("Clip selected: {:?}", clip_id);
+    ///         }
+    ///         _ => {}
+    ///     }
+    /// }));
+    /// ```
     pub fn set_event_listener(&mut self, listener: Box<dyn FnMut(&TrackEditorEvent)>) {
         self.event_listener = Some(listener);
     }
 
+    /// 获取并清空待处理的事件列表
+    ///
+    /// # 返回
+    ///
+    /// 自上次调用以来累积的所有事件
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use egui_track::{TrackEditor, TrackEditorOptions};
+    ///
+    /// let mut editor = TrackEditor::new(TrackEditorOptions::default());
+    /// // ... 用户交互 ...
+    /// let events = editor.take_events();
+    /// for event in events {
+    ///     println!("Event: {:?}", event);
+    /// }
+    /// ```
     pub fn take_events(&mut self) -> Vec<TrackEditorEvent> {
         std::mem::take(&mut self.pending_events)
     }
 
+    /// 执行编辑命令
+    ///
+    /// 用于程序化地操作编辑器，例如创建剪辑、移动剪辑等。
+    ///
+    /// # 参数
+    ///
+    /// * `command` - 要执行的命令
+    ///
+    /// # 示例
+    ///
+    /// ```rust
+    /// use egui_track::{TrackEditor, TrackEditorOptions, TrackEditorCommand, ClipType};
+    ///
+    /// let mut editor = TrackEditor::new(TrackEditorOptions::default());
+    /// // 先创建一个轨道
+    /// editor.execute_command(TrackEditorCommand::CreateTrack {
+    ///     name: "Track 1".to_string(),
+    /// });
+    /// // 然后创建剪辑
+    /// if let Some(track) = editor.tracks().first() {
+    ///     editor.execute_command(TrackEditorCommand::CreateClip {
+    ///         track_id: track.id,
+    ///         start: 0.0,
+    ///         duration: 4.0,
+    ///         clip_type: ClipType::Midi { midi_data: None },
+    ///     });
+    /// }
+    /// ```
     pub fn execute_command(&mut self, command: TrackEditorCommand) {
         match command {
             TrackEditorCommand::CreateClip { track_id, start, duration, clip_type } => {
@@ -329,79 +395,13 @@ impl TrackEditor {
                     ui.allocate_exact_size(available_size, Sense::click_and_drag());
 
                 // 处理缩放（Ctrl/Alt + 滚轮）
-                let scroll_delta = ui.input(|i| i.raw_scroll_delta);
-                if scroll_delta != Vec2::ZERO {
-                    if ui.input(|i| i.modifiers.ctrl) {
-                        // 水平缩放
-                        if scroll_delta.y != 0.0 {
-                            let old_zoom = self.timeline.zoom_x;
-                            let new_zoom = (self.timeline.zoom_x
-                                * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
-                            .clamp(10.0, 500.0);
-
-                            if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                let rel_x = mouse_pos.x - (rect.min.x + key_width);
-                                let beats_at_mouse = (rel_x - self.timeline.manual_scroll_x) / old_zoom;
-                                self.timeline.manual_scroll_x = rel_x - beats_at_mouse * new_zoom;
-                            }
-
-                            self.timeline.zoom_x = new_zoom;
-                            self.clamp_scroll_to_minus_one_beat();
-                        }
-                    } else if ui.input(|i| i.modifiers.alt) {
-                        // 垂直缩放（轨道高度）
-                        if scroll_delta.y != 0.0 {
-                            let old_zoom = self.timeline.zoom_y;
-                            let new_zoom = (self.timeline.zoom_y
-                                * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
-                            .clamp(20.0, 200.0);
-
-                            if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                let rel_y = mouse_pos.y - (rect.min.y + timeline_height);
-                                let value_at_mouse = (rel_y - self.timeline.manual_scroll_y) / old_zoom;
-                                self.timeline.manual_scroll_y = rel_y - value_at_mouse * new_zoom;
-                            }
-
-                            self.timeline.zoom_y = new_zoom;
-                        }
-                    }
-                }
+                self.handle_zoom(ui, &rect, key_width, timeline_height);
 
                 // 处理中键拖拽平移（参考 MIDI 编辑器的实现）
-                if ui.input(|i| i.pointer.middle_down()) {
-                    if self.is_panning {
-                        if let Some(start) = self.pan_start_pos {
-                            if let Some(curr) = ui.input(|i| i.pointer.hover_pos()) {
-                                let delta = curr - start;
-                                self.timeline.manual_scroll_x += delta.x;
-                                self.timeline.manual_scroll_y += delta.y;
-                                self.clamp_scroll_to_minus_one_beat();
-                                self.pan_start_pos = Some(curr);
-                                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                            }
-                        }
-                    } else {
-                        self.is_panning = true;
-                        self.pan_start_pos = ui.input(|i| i.pointer.hover_pos());
-                    }
-                } else {
-                    self.is_panning = false;
-                    self.pan_start_pos = None;
-                }
+                self.handle_panning(ui);
 
                 // 限制垂直滚动
-                let total_content_height = self.tracks.len() as f32 * self.timeline.zoom_y;
-                let view_height = rect.height() - timeline_height;
-                // 允许最后一个轨道滚动到视图的1/2处，而不是底部
-                let min_scroll_y = if total_content_height > view_height {
-                    // 最后一个轨道的位置
-                    let last_track_y = (self.tracks.len() - 1) as f32 * self.timeline.zoom_y;
-                    // 允许滚动到最后一个轨道在视图中间位置
-                    view_height / 2.0 - last_track_y
-                } else {
-                    0.0
-                };
-                self.timeline.manual_scroll_y = self.timeline.manual_scroll_y.clamp(min_scroll_y, 0.0);
+                self.clamp_vertical_scroll(&rect, timeline_height);
 
                 let mut pointer_consumed = false;
                 let note_offset_x = rect.min.x + key_width + self.timeline.manual_scroll_x;
@@ -618,11 +618,10 @@ impl TrackEditor {
                     );
                     
                     // 绘制标题栏（如果剪辑足够高）
-                    let title_bar_height = 18.0;
-                    if clip_rect.height() > title_bar_height + 4.0 {
+                    if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
                         let title_bar_rect = Rect::from_min_max(
                             Pos2::new(clip_rect.min.x, clip_rect.min.y),
-                            Pos2::new(clip_rect.max.x, clip_rect.min.y + title_bar_height),
+                            Pos2::new(clip_rect.max.x, clip_rect.min.y + CLIP_TITLE_BAR_HEIGHT),
                         );
                         
                         // 标题栏背景（更深的颜色，方便显示文字）
@@ -682,11 +681,10 @@ impl TrackEditor {
                 // 处理剪辑点击和拖拽
                 for (clip_id, clip_rect, track_index) in &visible_clips {
                     // 计算标题栏区域
-                    let title_bar_height = 18.0;
-                    let title_bar_rect = if clip_rect.height() > title_bar_height + 4.0 {
+                    let title_bar_rect = if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
                         Some(Rect::from_min_max(
                             Pos2::new(clip_rect.min.x, clip_rect.min.y),
-                            Pos2::new(clip_rect.max.x, clip_rect.min.y + title_bar_height),
+                            Pos2::new(clip_rect.max.x, clip_rect.min.y + CLIP_TITLE_BAR_HEIGHT),
                         ))
                     } else {
                         None
@@ -725,19 +723,17 @@ impl TrackEditor {
                         && ui.input(|i| i.pointer.primary_pressed()) {
                         if let Some(pointer) = response.interact_pointer_pos() {
                             // 排除标题栏区域
-                            let title_bar_height = 18.0;
-                            let in_title_bar = if clip_rect.height() > title_bar_height + 4.0 {
-                                pointer.y >= clip_rect.min.y && pointer.y <= clip_rect.min.y + title_bar_height
+                            let in_title_bar = if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
+                                pointer.y >= clip_rect.min.y && pointer.y <= clip_rect.min.y + CLIP_TITLE_BAR_HEIGHT
                             } else {
                                 false
                             };
                             
                             if clip_rect.contains(pointer) && !in_title_bar {
                                 // 检查是否在边缘（用于调整大小）
-                                let edge_threshold = 5.0;
-                                let hit_region = if (pointer.x - clip_rect.min.x) < edge_threshold {
+                                let hit_region = if (pointer.x - clip_rect.min.x) < CLIP_EDGE_THRESHOLD {
                                     clip::ClipHitRegion::LeftEdge
-                                } else if (clip_rect.max.x - pointer.x) < edge_threshold {
+                                } else if (clip_rect.max.x - pointer.x) < CLIP_EDGE_THRESHOLD {
                                     clip::ClipHitRegion::RightEdge
                                 } else {
                                     clip::ClipHitRegion::Body
@@ -977,7 +973,7 @@ impl TrackEditor {
                 let mut measure_tick = (start_tick as u64 / ticks_per_measure) * ticks_per_measure;
                 while measure_tick as i64 <= end_tick {
                     let x = note_offset_x + (measure_tick as f32 / tpb as f32) * self.timeline.zoom_x;
-                    if x >= rect.min.x + key_width - 5.0 && x <= rect.max.x {
+                    if x >= rect.min.x + key_width - TIMELINE_MEASURE_LINE_OFFSET && x <= rect.max.x {
                         painter.line_segment(
                             [
                                 Pos2::new(x, rect.min.y),
@@ -987,7 +983,7 @@ impl TrackEditor {
                         );
                         let measure_index = (measure_tick / ticks_per_measure) + 1;
                         painter.text(
-                            Pos2::new(x + 4.0, rect.min.y + 15.0),
+                            Pos2::new(x + TIMELINE_MEASURE_LABEL_OFFSET_X, rect.min.y + TIMELINE_MEASURE_LABEL_OFFSET_Y),
                             Align2::LEFT_CENTER,
                             format!("{}:1", measure_index),
                             FontId::proportional(11.0),
@@ -1023,11 +1019,10 @@ impl TrackEditor {
                         // 找到正在编辑的剪辑
                         for (clip_id, clip_rect, track_index) in &visible_clips {
                             if *clip_id == editing_clip_id {
-                                let title_bar_height = 18.0;
-                                if clip_rect.height() > title_bar_height + 4.0 {
+                                if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
                                     let title_bar_rect = Rect::from_min_max(
                                         Pos2::new(clip_rect.min.x, clip_rect.min.y),
-                                        Pos2::new(clip_rect.max.x, clip_rect.min.y + title_bar_height),
+                                        Pos2::new(clip_rect.max.x, clip_rect.min.y + CLIP_TITLE_BAR_HEIGHT),
                                     );
                                     
                                     // 获取或初始化编辑值
@@ -1202,13 +1197,13 @@ impl TrackEditor {
                                     // Mute 按钮
                                     let mute_response = if track_muted {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("M")
                                                 .fill(Color32::from_rgb(200, 100, 100))
                                         )
                                     } else {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("M")
                                         )
                                     };
@@ -1222,13 +1217,13 @@ impl TrackEditor {
                                     // Solo 按钮
                                     let solo_response = if track_solo {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("S")
                                                 .fill(Color32::from_rgb(100, 150, 200))
                                         )
                                     } else {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("S")
                                         )
                                     };
@@ -1242,13 +1237,13 @@ impl TrackEditor {
                                     // Record Arm 按钮
                                     let arm_response = if track_record_arm {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("R")
                                                 .fill(Color32::from_rgb(255, 50, 50))
                                         )
                                     } else {
                                         ui.add_sized(
-                                            Vec2::new(18.0, 18.0),
+                                            Vec2::new(TRACK_BUTTON_SIZE, TRACK_BUTTON_SIZE),
                                             egui::Button::new("R")
                                         )
                                     };
@@ -1262,13 +1257,13 @@ impl TrackEditor {
                                     // Monitor 按钮（使用英文首字母）
                                     let monitor_response = if track_monitor {
                                         ui.add_sized(
-                                            Vec2::new(26.0, 18.0), // 稍微宽一点以容纳 "Mon"
+                                            Vec2::new(TRACK_MONITOR_BUTTON_WIDTH, TRACK_BUTTON_SIZE),
                                             egui::Button::new("Mon")
                                                 .fill(Color32::from_rgb(150, 200, 100))
                                         )
                                     } else {
                                         ui.add_sized(
-                                            Vec2::new(26.0, 18.0),
+                                            Vec2::new(TRACK_MONITOR_BUTTON_WIDTH, TRACK_BUTTON_SIZE),
                                             egui::Button::new("Mon")
                                         )
                                     };
@@ -1291,7 +1286,7 @@ impl TrackEditor {
                                         -60.0
                                     };
                                     let vol_response = ui.add_sized(
-                                        Vec2::new(33.75, 20.0), // 3/4 of 45.0
+                                        Vec2::new(TRACK_VOLUME_SLIDER_WIDTH, TRACK_CONTROL_SLIDER_HEIGHT),
                                         egui::Slider::new(&mut volume_value, 0.0..=1.0)
                                             .text(format!("{:.0}dB", db_value))
                                     );
@@ -1315,7 +1310,7 @@ impl TrackEditor {
                                         "C".to_string()
                                     };
                                     let pan_response = ui.add_sized(
-                                        Vec2::new(22.5, 20.0), // 1/2 of 45.0
+                                        Vec2::new(TRACK_PAN_SLIDER_WIDTH, TRACK_CONTROL_SLIDER_HEIGHT),
                                         egui::Slider::new(&mut pan_value, -1.0..=1.0)
                                             .text(pan_label)
                                     );
@@ -1385,8 +1380,7 @@ impl TrackEditor {
                                 
                                 // 忽略打开菜单时的点击（相同位置，阈值内）
                                 let ignore_click = if let Some(open_pos) = self.track_context_menu_open_pos {
-                                    let threshold = 5.0;
-                                    click_pos.distance(open_pos) < threshold
+                                    click_pos.distance(open_pos) < TRACK_CONTEXT_MENU_THRESHOLD
                                 } else {
                                     false
                                 };
@@ -1450,6 +1444,89 @@ impl TrackEditor {
     }
 
 
+    /// 处理缩放操作（Ctrl/Alt + 滚轮）
+    fn handle_zoom(&mut self, ui: &Ui, rect: &Rect, key_width: f32, timeline_height: f32) {
+        let scroll_delta = ui.input(|i| i.raw_scroll_delta);
+        if scroll_delta == Vec2::ZERO {
+            return;
+        }
+
+        if ui.input(|i| i.modifiers.ctrl) {
+            // 水平缩放
+            if scroll_delta.y != 0.0 {
+                let old_zoom = self.timeline.zoom_x;
+                let new_zoom = (self.timeline.zoom_x
+                    * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
+                .clamp(10.0, 500.0);
+
+                if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let rel_x = mouse_pos.x - (rect.min.x + key_width);
+                    let beats_at_mouse = (rel_x - self.timeline.manual_scroll_x) / old_zoom;
+                    self.timeline.manual_scroll_x = rel_x - beats_at_mouse * new_zoom;
+                }
+
+                self.timeline.zoom_x = new_zoom;
+                self.clamp_scroll_to_minus_one_beat();
+            }
+        } else if ui.input(|i| i.modifiers.alt) {
+            // 垂直缩放（轨道高度）
+            if scroll_delta.y != 0.0 {
+                let old_zoom = self.timeline.zoom_y;
+                let new_zoom = (self.timeline.zoom_y
+                    * if scroll_delta.y > 0.0 { 1.1 } else { 0.9 })
+                .clamp(20.0, 200.0);
+
+                if let Some(mouse_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    let rel_y = mouse_pos.y - (rect.min.y + timeline_height);
+                    let value_at_mouse = (rel_y - self.timeline.manual_scroll_y) / old_zoom;
+                    self.timeline.manual_scroll_y = rel_y - value_at_mouse * new_zoom;
+                }
+
+                self.timeline.zoom_y = new_zoom;
+            }
+        }
+    }
+
+    /// 处理中键拖拽平移
+    fn handle_panning(&mut self, ui: &Ui) {
+        if ui.input(|i| i.pointer.middle_down()) {
+            if self.is_panning {
+                if let Some(start) = self.pan_start_pos {
+                    if let Some(curr) = ui.input(|i| i.pointer.hover_pos()) {
+                        let delta = curr - start;
+                        self.timeline.manual_scroll_x += delta.x;
+                        self.timeline.manual_scroll_y += delta.y;
+                        self.clamp_scroll_to_minus_one_beat();
+                        self.pan_start_pos = Some(curr);
+                        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                    }
+                }
+            } else {
+                self.is_panning = true;
+                self.pan_start_pos = ui.input(|i| i.pointer.hover_pos());
+            }
+        } else {
+            self.is_panning = false;
+            self.pan_start_pos = None;
+        }
+    }
+
+    /// 限制垂直滚动
+    fn clamp_vertical_scroll(&mut self, rect: &Rect, timeline_height: f32) {
+        let total_content_height = self.tracks.len() as f32 * self.timeline.zoom_y;
+        let view_height = rect.height() - timeline_height;
+        // 允许最后一个轨道滚动到视图的1/2处，而不是底部
+        let min_scroll_y = if total_content_height > view_height {
+            // 最后一个轨道的位置
+            let last_track_y = (self.tracks.len() - 1) as f32 * self.timeline.zoom_y;
+            // 允许滚动到最后一个轨道在视图中间位置
+            view_height / 2.0 - last_track_y
+        } else {
+            0.0
+        };
+        self.timeline.manual_scroll_y = self.timeline.manual_scroll_y.clamp(min_scroll_y, 0.0);
+    }
+
     /// 限制滚动，确保最多只能看到 -0.25 拍的位置
     fn clamp_scroll_to_minus_one_beat(&mut self) {
         let visible_earliest_beat = self.timeline.scroll_x - (self.timeline.manual_scroll_x / self.timeline.zoom_x) as f64;
@@ -1459,28 +1536,6 @@ impl TrackEditor {
         }
     }
 
-    #[allow(dead_code)]
-    fn handle_interactions(&mut self, ui: &mut Ui) {
-        // 处理键盘快捷键（平移、拖拽和选择逻辑已在 ui_track_roll 中处理）
-        ui.input(|i| {
-            if i.key_pressed(Key::A) && i.modifiers.ctrl {
-                // 全选剪辑
-                self.selected_clips.clear();
-            for track in &self.tracks {
-                for clip in &track.clips {
-                        self.selected_clips.insert(clip.id);
-                    }
-                }
-            }
-
-            if (i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) && !self.selected_clips.is_empty() {
-                let clips_to_delete: Vec<ClipId> = self.selected_clips.iter().copied().collect();
-                for clip_id in clips_to_delete {
-                    self.execute_command(TrackEditorCommand::DeleteClip { clip_id });
-                }
-            }
-        });
-    }
 
     fn handle_clip_click(&mut self, clip_id: ClipId, modifiers: Modifiers, hit_region: clip::ClipHitRegion) {
         match hit_region {
@@ -1509,11 +1564,6 @@ impl TrackEditor {
     }
 
 
-    /// 更新选择框（已废弃，选择框逻辑已在 ui_track_roll 中处理）
-    #[allow(dead_code)]
-    fn update_selection_from_box(&mut self) {
-        // 此函数已不再使用，选择框逻辑已在 ui_track_roll 中直接处理
-    }
 
     // Command implementations
     fn create_clip(&mut self, track_id: TrackId, start: f64, duration: f64, clip_type: ClipType) {
@@ -1664,14 +1714,30 @@ impl TrackEditor {
     }
 
     // Public getters
+
+    /// 获取所有轨道的只读引用
+    ///
+    /// # 返回
+    ///
+    /// 轨道列表的切片
     pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
 
+    /// 获取时间轴状态的只读引用
+    ///
+    /// # 返回
+    ///
+    /// 时间轴状态，包含缩放、滚动位置、播放头等信息
     pub fn timeline(&self) -> &TimelineState {
         &self.timeline
     }
 
+    /// 获取当前选中的剪辑 ID 集合
+    ///
+    /// # 返回
+    ///
+    /// 选中剪辑 ID 的有序集合
     pub fn selected_clips(&self) -> &BTreeSet<ClipId> {
         &self.selected_clips
     }

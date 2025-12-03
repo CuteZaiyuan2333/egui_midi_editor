@@ -13,3 +13,4 @@ egui = "0.30"
 egui_track = { path = "../egui_track" }
 env_logger = "0.10"
 log = "0.4"
+rfd = "0.14"

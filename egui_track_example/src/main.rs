@@ -1,6 +1,7 @@
 use eframe::egui;
-use egui_track::{TrackEditor, TrackEditorOptions, ClipType, ProjectFile};
+use egui_track::{TrackEditor, TrackEditorOptions, ClipType, ProjectFile, format_time};
 use std::path::PathBuf;
+use rfd::FileDialog;
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
@@ -58,11 +59,13 @@ impl TrackEditorApp {
     }
 
     fn open_project(&mut self) {
-        // TODO: Open file dialog to select project file
-        // For now, just log
-        log::info!("Open project - file dialog not implemented yet");
-        // Example: if file dialog returns a path
-        // self.load_project(&selected_path);
+        if let Some(path) = FileDialog::new()
+            .add_filter("Track Project", &["json"])
+            .set_title("Open Project")
+            .pick_file()
+        {
+            self.load_project(&path);
+        }
     }
 
     fn save_project(&mut self) {
@@ -75,12 +78,14 @@ impl TrackEditorApp {
     }
 
     fn save_project_as(&mut self) {
-        // TODO: Open file dialog to select save path
-        // For now, just log
-        log::info!("Save project as - file dialog not implemented yet");
-        // Example: if file dialog returns a path
-        // self.save_project_to_path(&selected_path);
-        // self.current_project_path = Some(selected_path);
+        if let Some(path) = FileDialog::new()
+            .add_filter("Track Project", &["json"])
+            .set_title("Save Project As")
+            .set_file_name("project.json")
+            .save_file()
+        {
+            self.save_project_to_path(&path);
+        }
     }
 
     fn save_project_to_path(&mut self, path: &PathBuf) {
@@ -101,11 +106,16 @@ impl TrackEditorApp {
     }
 
     fn export_project(&mut self) {
-        // TODO: Open file dialog to select export path
-        // For now, just log
-        log::info!("Export project - file dialog not implemented yet");
-        // Example: if file dialog returns a path
-        // Export logic would go here
+        if let Some(path) = FileDialog::new()
+            .add_filter("Track Project", &["json"])
+            .set_title("Export Project")
+            .set_file_name("export.json")
+            .save_file()
+        {
+            // For now, export is the same as save
+            self.save_project_to_path(&path);
+            log::info!("Project exported to: {:?}", path);
+        }
     }
 }
 
@@ -171,10 +181,7 @@ impl eframe::App for TrackEditorApp {
 
                 // Playhead position
                 let pos = self.editor.timeline().playhead_position;
-                let minutes = (pos / 60.0) as u32;
-                let seconds = (pos % 60.0) as u32;
-                let milliseconds = ((pos % 1.0) * 1000.0) as u32;
-                ui.label(format!("Position: {:02}:{:02}.{:03}", minutes, seconds, milliseconds));
+                ui.label(format!("Position: {}", format_time(pos)));
             });
         });
 

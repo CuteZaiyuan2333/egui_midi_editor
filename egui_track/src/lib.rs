@@ -50,8 +50,10 @@ pub mod structure;
 pub mod editor;
 pub mod ui;
 pub mod project;
+pub mod utils;
 
 pub use structure::{Track, Clip, TrackId, ClipId, TimelineState, ClipType, MidiClipData, AudioClipData, PreviewNote};
 pub use editor::{TrackEditorCommand, TrackEditorEvent};
 pub use ui::{TrackEditor, TrackEditorOptions};
 pub use project::ProjectFile;
+pub use utils::format_time;

@@ -5,6 +5,7 @@
 
 use crate::structure::TimelineState;
 use crate::editor::TrackEditorCommand;
+use crate::utils::format_time;
 use egui::*;
 
 pub struct Toolbar {
@@ -45,11 +46,7 @@ impl Toolbar {
         // 水平布局（与 MIDI 编辑器一致）
         ui.horizontal(|ui| {
             // Time display
-            let total_seconds = self.current_time;
-            let minutes = (total_seconds / 60.0) as u32;
-            let seconds = (total_seconds % 60.0) as u32;
-            let milliseconds = ((total_seconds % 1.0) * 1000.0) as u32;
-            let time_display = format!("{:02}:{:02}.{:03}", minutes, seconds, milliseconds);
+            let time_display = format_time(self.current_time);
             ui.label(format!("Time: {}", time_display));
             ui.separator();
 
