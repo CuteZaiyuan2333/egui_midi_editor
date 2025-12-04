@@ -1127,6 +1127,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_file_tree"
+version = "0.1.0"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1336,6 +1343,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "file_tree_example"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_file_tree",
+ "env_logger",
+ "log",
+ "rfd 0.14.1",
 ]
 
 [[package]]
@@ -2149,6 +2168,21 @@ dependencies = [
  "log",
  "objc",
  "paste",
+]
+
+[[package]]
+name = "midi_track_file_example"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_file_tree",
+ "egui_midi",
+ "egui_track",
+ "env_logger",
+ "log",
+ "midly",
+ "rfd 0.14.1",
 ]
 
 [[package]]

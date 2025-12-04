@@ -1,6 +1,6 @@
 # egui MIDI Editor
 
-A modern, lightweight single-track MIDI editor library built with Rust and egui framework. Designed to be seamlessly integrated into DAW (Digital Audio Workstation) software, providing a focused and performant MIDI editing experience.
+A project centered around MIDI editor with multiple utility libraries and examples. Built with Rust and egui framework, providing a focused and performant MIDI editing experience along with useful tools for DAW (Digital Audio Workstation) software development.
 
 ## 🎯 Project Goals
 
@@ -154,6 +154,56 @@ A demonstration application showcasing the MIDI editor library's capabilities wi
 ### `egui_track_example` (Demo Application)
 A demonstration application showcasing the track editor library with a functional multi-track timeline interface. This example application serves as the foundation for future development, where we plan to build a simple DAW software that integrates both the MIDI editor (`egui_midi`) and track editor (`egui_track`) plugins into a unified digital audio workstation.
 
+### `midi_track_file_example` (Integrated Demo Application)
+A comprehensive demonstration application that integrates all three libraries (`egui_midi`, `egui_track`, and `egui_file_tree`) into a unified DAW-style interface:
+
+**Layout Structure**:
+- **Top Section**: Tabbed interface with:
+  - Track Editor tab: Full multi-track timeline editor
+  - Other Tools tab: Placeholder for additional tools
+- **Bottom Section**: Split into two panels:
+  - **Left Panel**: File tree browser for navigating directory structures
+  - **Right Panel**: Multi-tab MIDI editor interface supporting multiple open MIDI files
+
+**Key Features**:
+- ✅ Resizable splitter controls for adjusting panel proportions:
+  - Vertical splitter between top and bottom sections
+  - Horizontal splitter between file tree and MIDI editors
+- ✅ File tree integration with directory browsing
+- ✅ MIDI file opening: Double-click `.mid` or `.midi` files in the file tree to open them in new MIDI editor tabs
+- ✅ Multiple MIDI editor instances: Each tab maintains its own editor state
+- ✅ Tab management: Add, switch, and close MIDI editor tabs
+- ✅ Project file management: Save/load track editor projects
+- ✅ Menu integration: File operations and directory selection
+
+**Usage**:
+```bash
+cargo run --release -p midi_track_file_example
+```
+
+This application demonstrates how to integrate all three libraries into a cohesive DAW interface, providing a foundation for building complete digital audio workstation software.
+
+### `egui_file_tree` (Library)
+A file system tree component library for displaying directory structures in a tree view:
+- **tree.rs**: File tree component implementation with:
+  - Tree view display of file and directory structures
+  - Expand/collapse folders (with ▶/▼ icons)
+  - File and folder type distinction (📁/📄 icons)
+  - Selection support for files and folders
+  - Double-click events (handled by the application)
+  - Parent directory navigation ("../" option)
+  - Automatic sorting (folders first, then by name)
+  - Error handling for inaccessible directories
+  - Indented display for hierarchical relationships
+
+### `file_tree_example` (Demo Application)
+A demonstration application showcasing the file tree component with a simple file browser interface:
+- Top menu bar with "File" menu
+- "Open Directory" option to select a directory
+- Central panel displaying the file tree
+- Bottom status bar showing current status and event information
+- Event handling for selection and double-click operations
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -175,8 +225,16 @@ cargo run --release -p example_app
 # Run the track editor example application
 cargo run --release -p egui_track_example
 
+# Run the file tree example application
+cargo run --release -p file_tree_example
+
+# Run the integrated MIDI/Track/File example application
+cargo run --release -p midi_track_file_example
+
 # Note: The MIDI editor demo opens/saves `.aquamidi` single-track projects and can export standard `.mid` files.
 # The track editor demo supports project file I/O for multi-track arrangements.
+# The file tree demo allows browsing directory structures with a tree view interface.
+# The integrated demo combines all three libraries into a unified DAW-style interface.
 ```
 
 ## 🎹 Usage
@@ -442,6 +500,19 @@ egui_midi_editor/
     ├── Cargo.toml
     └── src/
         └── main.rs             # Track editor example
+├── egui_file_tree/            # File tree component library
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs             # Public API
+│       └── tree.rs            # File tree component implementation
+└── file_tree_example/         # File tree demo application
+    ├── Cargo.toml
+    └── src/
+        └── main.rs            # File tree example
+└── midi_track_file_example/   # Integrated demo application
+    ├── Cargo.toml
+    └── src/
+        └── main.rs            # Integrated MIDI/Track/File example
 ```
 
 ### Key Dependencies
@@ -467,6 +538,112 @@ We welcome contributions that improve:
 - **Editing Tools**: Advanced editing capabilities
 - **Performance**: Optimizations for large MIDI files
 - **Code Quality**: Cleaner code, better error handling
+
+## 🌳 File Tree Component (`egui_file_tree`)
+
+The `egui_file_tree` library provides a file system tree component for displaying directory structures in a tree view format, commonly used in file browsers and project explorers.
+
+### File Tree Features
+
+#### Tree View Display
+- ✅ Tree structure visualization with hierarchical indentation
+- ✅ Expand/collapse folders with visual indicators (▶/▼)
+- ✅ File and folder type distinction with icons (📁/📄)
+- ✅ Automatic sorting (folders first, then alphabetical by name)
+- ✅ Parent directory navigation ("../" option at root level)
+
+#### Interaction
+- ✅ Click to select files or folders
+- ✅ Double-click events (handled by the application)
+- ✅ Visual selection feedback
+- ✅ Hover cursor indication
+
+#### Error Handling
+- ✅ Graceful handling of inaccessible directories
+- ✅ Error messages displayed in the UI
+- ✅ Continues operation even when some directories cannot be read
+
+### File Tree Usage
+
+```rust
+use egui_file_tree::{FileTree, FileTreeEvent};
+use std::path::PathBuf;
+
+// Create file tree
+let mut file_tree = FileTree::new(PathBuf::from("/path/to/directory"));
+
+// Render in UI
+let events = file_tree.ui(ui);
+
+// Handle events
+for event in events {
+    match event {
+        FileTreeEvent::PathSelected { path } => {
+            println!("Selected: {:?}", path);
+        }
+        FileTreeEvent::PathDoubleClicked { path } => {
+            println!("Double clicked: {:?}", path);
+            // Handle file opening here
+        }
+        FileTreeEvent::NavigateToParent => {
+            // Navigate to parent directory
+            if let Some(parent) = file_tree.root_path().parent() {
+                file_tree.set_root_path(parent.to_path_buf());
+            }
+        }
+    }
+}
+```
+
+### File Tree API
+
+```rust
+impl FileTree {
+    /// Create a new file tree with the specified root directory
+    pub fn new(root_path: PathBuf) -> Self;
+    
+    /// Set the root directory path
+    pub fn set_root_path(&mut self, path: PathBuf);
+    
+    /// Expand a directory path
+    pub fn expand_path(&mut self, path: &PathBuf);
+    
+    /// Collapse a directory path
+    pub fn collapse_path(&mut self, path: &PathBuf);
+    
+    /// Get the current root directory path
+    pub fn root_path(&self) -> &PathBuf;
+    
+    /// Render the UI and return events
+    pub fn ui(&mut self, ui: &mut Ui) -> Vec<FileTreeEvent>;
+}
+```
+
+### File Tree Events
+
+```rust
+pub enum FileTreeEvent {
+    /// A path was selected (single click)
+    PathSelected { path: PathBuf },
+    
+    /// A path was double-clicked
+    PathDoubleClicked { path: PathBuf },
+    
+    /// Navigate to parent directory (clicked "../")
+    NavigateToParent,
+}
+```
+
+### File Tree Example Application
+
+The `file_tree_example` application demonstrates the file tree component with a complete file browser interface. It includes:
+
+- Top menu bar with "File" menu containing "Open Directory" option
+- Central panel displaying the file tree with all features
+- Bottom status bar showing current status and event information
+- Full event handling for selection, double-click, and parent navigation
+
+**Design Philosophy**: The library only handles display and navigation. File opening/closing operations are handled by the application through event callbacks, keeping the component focused and reusable.
 
 ## 🎼 Track Editor (`egui_track`)
 
@@ -553,6 +730,12 @@ The `egui_track_example` application demonstrates the track editor library with 
 - Seamlessly switch between timeline arrangement and MIDI note editing
 - Export complete multi-track projects
 
+**Current Implementation**: The `midi_track_file_example` application demonstrates an early implementation of this unified DAW concept, integrating:
+- Track editor for multi-track arrangement
+- File tree browser for project navigation
+- Multiple MIDI editor instances for detailed note editing
+- Resizable interface panels for flexible workflow
+
 ## 📋 Roadmap
 
 ### Implemented Features ✅
@@ -613,6 +796,11 @@ The `egui_track_example` application demonstrates the track editor library with 
 ## 🎉 Recent Updates
 
 ### Latest Improvements
+- **Integrated DAW Example**: New `midi_track_file_example` application demonstrating unified integration of MIDI editor, track editor, and file tree components
+  - Resizable splitter controls for flexible interface layout
+  - Multi-tab MIDI editor supporting multiple open files
+  - File tree integration with double-click to open MIDI files
+  - Tabbed interface for track editor and additional tools
 - **Swing Rhythm Enhancement**: Moved to right-click context menu with real-time adjustment (0-200% range, supports custom input)
 - **Interactive Loop Editing**: Shift + Left-drag on timeline to edit loop boundaries with grid snapping
 - **Timeline Interactions**: Left-drag for playhead positioning, Shift + Left-drag for loop editing (both support grid snapping, Alt to disable)

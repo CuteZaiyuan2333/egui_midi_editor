@@ -1,0 +1,20 @@
+[package]
+name = "midi_track_file_example"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "midi_track_file_example"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.30"
+egui = "0.30"
+egui_track = { path = "../egui_track" }
+egui_midi = { path = "../egui_midi" }
+egui_file_tree = { path = "../egui_file_tree" }
+midly = "0.5"
+env_logger = "0.10"
+log = "0.4"
+rfd = "0.14"
+

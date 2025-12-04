@@ -3,6 +3,9 @@ members = [
     "egui_midi",
     "egui_track",
     "egui_track_example",
+    "midi_track_file_example",
     "example_app",
+    "egui_file_tree",
+    "file_tree_example",
 ]
 resolver = "2"
