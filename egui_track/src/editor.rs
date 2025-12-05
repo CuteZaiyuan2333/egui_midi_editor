@@ -92,6 +92,27 @@ pub enum TrackEditorCommand {
         track_id: TrackId,
         monitor: bool,
     },
+    CopyClips {
+        clip_ids: Vec<ClipId>,
+    },
+    CutClips {
+        clip_ids: Vec<ClipId>,
+    },
+    PasteClips {
+        track_id: TrackId,
+        start_time: f64,
+    },
+    DeleteClips {
+        clip_ids: Vec<ClipId>,
+    },
+    UpdateClipPreview {
+        clip_id: ClipId,
+        preview_notes: Vec<crate::structure::PreviewNote>,
+    },
+    UpdateClipMidiFilePath {
+        clip_id: ClipId,
+        new_file_path: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +136,9 @@ pub enum TrackEditorEvent {
     ClipRenamed {
         clip_id: ClipId,
         new_name: String,
+    },
+    ClipDeleted {
+        clip_id: ClipId,
     },
     PlayheadChanged {
         position: f64,

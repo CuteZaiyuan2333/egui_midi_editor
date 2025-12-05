@@ -6,6 +6,9 @@ use egui::Color32;
 use serde::{Deserialize, Serialize, Serializer, Deserializer};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// Re-export MidiState for use in MidiClipData
+pub use egui_midi::structure::MidiState;
+
 // Color32 序列化辅助类型
 #[derive(Serialize, Deserialize)]
 struct Color32Helper {
@@ -80,6 +83,8 @@ pub struct PreviewNote {
 pub struct MidiClipData {
     pub midi_file_path: Option<String>,
     pub preview_notes: Vec<PreviewNote>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub midi_state: Option<MidiState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,7 +118,13 @@ impl Clip {
             track_id,
             start_time,
             duration,
-            clip_type: ClipType::Midi { midi_data: None },
+            clip_type: ClipType::Midi { 
+                midi_data: Some(MidiClipData {
+                    midi_file_path: None,
+                    preview_notes: Vec::new(),
+                    midi_state: None,
+                })
+            },
             name,
             color: Color32::from_rgb(100, 200, 100),
         }

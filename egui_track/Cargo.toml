@@ -7,3 +7,4 @@ edition = "2021"
 egui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+egui_midi = { path = "../egui_midi" }

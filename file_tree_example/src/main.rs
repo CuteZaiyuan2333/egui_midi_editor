@@ -80,6 +80,14 @@ impl eframe::App for FileTreeApp {
                             self.status_message = format!("Double clicked: {:?} (File opening is handled by the application)", path);
                             log::info!("Path double clicked: {:?}", path);
                         }
+                        FileTreeEvent::PathRightClicked { path, pos: _ } => {
+                            self.status_message = format!("Right clicked: {:?}", path);
+                            log::info!("Path right clicked: {:?}", path);
+                        }
+                        FileTreeEvent::PathDragStarted { path } => {
+                            self.status_message = format!("Drag started: {:?}", path);
+                            log::info!("Path drag started: {:?}", path);
+                        }
                         FileTreeEvent::NavigateToParent => {
                             if let Some(ref mut file_tree) = self.file_tree {
                                 if let Some(parent) = file_tree.root_path().parent() {

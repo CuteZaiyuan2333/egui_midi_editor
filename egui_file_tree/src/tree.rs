@@ -4,6 +4,7 @@ use egui::*;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+
 /// 文件树事件
 #[derive(Debug, Clone)]
 pub enum FileTreeEvent {
@@ -11,6 +12,10 @@ pub enum FileTreeEvent {
     PathSelected { path: PathBuf },
     /// 路径被双击
     PathDoubleClicked { path: PathBuf },
+    /// 路径被右键点击
+    PathRightClicked { path: PathBuf, pos: Pos2 },
+    /// 路径开始被拖拽
+    PathDragStarted { path: PathBuf },
     /// 导航到父目录
     NavigateToParent,
 }
@@ -23,6 +28,10 @@ pub struct FileTree {
     expanded: BTreeSet<PathBuf>,
     /// 当前选中的路径
     selected: Option<PathBuf>,
+    /// 正在拖拽的路径
+    dragging_path: Option<PathBuf>,
+    /// 拖拽开始时的文件路径和鼠标位置
+    drag_start: Option<(PathBuf, Pos2)>,
 }
 
 impl FileTree {
@@ -32,6 +41,8 @@ impl FileTree {
             root_path,
             expanded: BTreeSet::new(),
             selected: None,
+            dragging_path: None,
+            drag_start: None,
         };
         // 默认展开根目录
         tree.expanded.insert(tree.root_path.clone());
@@ -44,6 +55,19 @@ impl FileTree {
         self.expanded.clear();
         self.expanded.insert(self.root_path.clone());
         self.selected = None;
+        self.dragging_path = None;
+        self.drag_start = None;
+    }
+    
+    /// 获取正在拖拽的路径
+    pub fn dragging_path(&self) -> Option<&PathBuf> {
+        self.dragging_path.as_ref()
+    }
+    
+    /// 清除拖拽状态
+    pub fn clear_drag(&mut self) {
+        self.dragging_path = None;
+        self.drag_start = None;
     }
 
     /// 展开指定路径
@@ -60,6 +84,11 @@ impl FileTree {
     pub fn ui(&mut self, ui: &mut Ui) -> Vec<FileTreeEvent> {
         let mut events = Vec::new();
         let root_path = self.root_path.clone();
+        
+        // 检查是否在拖拽过程中鼠标释放（全局检查）
+        if self.dragging_path.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+            self.clear_drag();
+        }
         
         ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -175,6 +204,54 @@ impl FileTree {
                 let response = ui.selectable_label(is_selected, label_text)
                     .on_hover_cursor(CursorIcon::PointingHand);
 
+                // 处理拖拽检测（仅对文件，且是 .midiclip 文件）
+                if !is_dir {
+                    if let Some(ext) = path_buf.extension() {
+                        if ext == "midiclip" {
+                            // 检测鼠标按下
+                            if response.is_pointer_button_down_on() {
+                                if self.dragging_path.is_none() && self.drag_start.is_none() {
+                                    // 记录拖拽开始位置和文件路径
+                                    if let Some(pointer) = response.interact_pointer_pos() {
+                                        self.drag_start = Some((path_buf.clone(), pointer));
+                                    }
+                                }
+                            }
+                            
+                            // 检测拖拽开始（鼠标按下并移动一定距离）
+                            // 只有当拖拽开始的文件与当前文件匹配时，才检测拖拽
+                            // 这确保只有真正从当前文件开始的拖拽才会被识别
+                            if let Some((drag_file_path, start_pos)) = &self.drag_start {
+                                // 只有当拖拽开始的文件与当前文件匹配时，才检测拖拽
+                                if drag_file_path == &path_buf {
+                                    if ui.input(|i| i.pointer.primary_down()) {
+                                        if let Some(current_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                            let drag_distance = (current_pos - *start_pos).length();
+                                            const DRAG_THRESHOLD: f32 = 5.0; // 5像素阈值
+                                            
+                                            // 只有当没有正在拖拽的文件，且拖拽距离超过阈值时，才触发拖拽开始事件
+                                            if drag_distance > DRAG_THRESHOLD && self.dragging_path.is_none() {
+                                                // 触发拖拽开始事件
+                                                self.dragging_path = Some(path_buf.clone());
+                                                events.push(FileTreeEvent::PathDragStarted {
+                                                    path: path_buf.clone(),
+                                                });
+                                            }
+                                        }
+                                    } else {
+                                        // 鼠标释放，清除拖拽状态
+                                        if self.dragging_path.as_ref() == Some(&path_buf) {
+                                            self.clear_drag();
+                                        }
+                                        // 清除拖拽开始位置（只有当是当前文件时才清除）
+                                        self.drag_start = None;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 处理点击事件
                 if response.clicked() {
                     self.selected = Some(path_buf.clone());
@@ -188,6 +265,16 @@ impl FileTree {
                     events.push(FileTreeEvent::PathDoubleClicked {
                         path: path_buf.clone(),
                     });
+                }
+
+                // 处理右键点击事件
+                if response.secondary_clicked() {
+                    if let Some(pointer) = response.interact_pointer_pos() {
+                        events.push(FileTreeEvent::PathRightClicked {
+                            path: path_buf.clone(),
+                            pos: pointer,
+                        });
+                    }
                 }
             });
 

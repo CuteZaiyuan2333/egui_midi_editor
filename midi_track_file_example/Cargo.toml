@@ -8,6 +8,7 @@ name = "midi_track_file_example"
 path = "src/main.rs"
 
 [dependencies]
+rodio = "0.20"
 eframe = "0.30"
 egui = "0.30"
 egui_track = { path = "../egui_track" }

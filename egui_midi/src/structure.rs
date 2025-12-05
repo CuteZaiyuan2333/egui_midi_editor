@@ -1,4 +1,5 @@
 use midly::{MetaMessage, Smf, TrackEventKind};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -7,7 +8,7 @@ static NOTE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CURVE_LANE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 static CURVE_POINT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NoteId(pub u64);
 
 impl NoteId {
@@ -16,7 +17,7 @@ impl NoteId {
     }
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
     pub id: NoteId,
     pub start: u64,    // Absolute ticks
@@ -41,7 +42,7 @@ impl Note {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CurveLaneId(pub u64);
 
 impl CurveLaneId {
@@ -50,7 +51,7 @@ impl CurveLaneId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CurvePointId(pub u64);
 
 impl CurvePointId {
@@ -59,7 +60,7 @@ impl CurvePointId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CurveLaneType {
     Velocity,
     Pitch,
@@ -81,7 +82,7 @@ impl CurveLaneType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CurvePoint {
     pub id: CurvePointId,
     pub tick: u64,
@@ -98,7 +99,7 @@ impl CurvePoint {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CurveLane {
     pub id: CurveLaneId,
     pub lane_type: CurveLaneType,
@@ -181,7 +182,7 @@ impl CurveLane {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrackMeta {
     pub channel: u8,
     pub program: Option<u8>,
@@ -202,7 +203,7 @@ impl Default for TrackMeta {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MidiState {
     pub notes: Vec<Note>,
     pub curves: Vec<CurveLane>,

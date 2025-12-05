@@ -1131,6 +1131,7 @@ name = "egui_file_tree"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "log",
 ]
 
 [[package]]
@@ -1161,6 +1162,7 @@ dependencies = [
  "log",
  "midly",
  "rodio",
+ "serde",
 ]
 
 [[package]]
@@ -1168,6 +1170,7 @@ name = "egui_track"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "egui_midi",
  "serde",
  "serde_json",
 ]
@@ -2183,6 +2186,7 @@ dependencies = [
  "log",
  "midly",
  "rfd 0.14.1",
+ "rodio",
 ]
 
 [[package]]

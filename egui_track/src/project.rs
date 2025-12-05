@@ -31,17 +31,17 @@ impl ProjectFile {
     /// - <项目名称>/audio/ - 音频剪辑文件夹
     /// - <项目名称>/export/ - 导出文件夹
     pub fn save_to_path(&self, project_path: &Path) -> Result<(), io::Error> {
-        // 确保项目目录存在
-        if let Some(parent) = project_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // 创建项目根目录（如果不存在）
-        let project_dir = if project_path.is_file() {
+        // 判断 project_path 是文件还是目录
+        // 如果有扩展名（如 .json），则认为是文件路径
+        let project_dir = if project_path.extension().is_some() {
+            // 是文件路径，获取父目录作为项目目录
             project_path.parent().unwrap_or(Path::new("."))
         } else {
+            // 是目录路径，直接使用
             project_path
         };
+        
+        // 确保项目目录存在
         fs::create_dir_all(project_dir)?;
 
         // 创建子文件夹
@@ -53,16 +53,16 @@ impl ProjectFile {
         fs::create_dir_all(&audio_dir)?;
         fs::create_dir_all(&export_dir)?;
 
-        // 确定JSON文件路径
+        // 确定项目文件路径（支持 .tracks 和 .json 扩展名）
         let json_path = if project_path.extension().is_some() {
             project_path.to_path_buf()
         } else {
-            // 如果没有扩展名，使用项目目录名作为文件名
+            // 如果没有扩展名，使用项目目录名作为文件名，默认使用 .tracks
             let project_name = project_dir
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("project");
-            project_dir.join(format!("{}.json", project_name))
+            project_dir.join(format!("{}.tracks", project_name))
         };
 
         // 序列化并保存JSON文件

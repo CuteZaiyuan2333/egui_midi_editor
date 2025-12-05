@@ -170,11 +170,28 @@ A comprehensive demonstration application that integrates all three libraries (`
   - Vertical splitter between top and bottom sections
   - Horizontal splitter between file tree and MIDI editors
 - ✅ File tree integration with directory browsing
-- ✅ MIDI file opening: Double-click `.mid` or `.midi` files in the file tree to open them in new MIDI editor tabs
+- ✅ MIDI file opening: Double-click `.mid` or `.midiclip` files in the file tree to open them in new MIDI editor tabs
 - ✅ Multiple MIDI editor instances: Each tab maintains its own editor state
 - ✅ Tab management: Add, switch, and close MIDI editor tabs
-- ✅ Project file management: Save/load track editor projects
+- ✅ Project file management: Save/load track editor projects (`.tracks` format)
 - ✅ Menu integration: File operations and directory selection
+- ✅ **MIDI Clip Workflow**:
+  - Create and manage `.midiclip` files (single-track MIDI format)
+  - Convert standard `.mid` files to `.midiclip` format via right-click context menu
+  - Drag and drop `.midiclip` files from file tree to track editor to create clips
+  - Double-click clips in track editor to open them in MIDI editor for editing
+  - Automatic preview update: When a MIDI clip is edited and saved, all clips using the same file are automatically updated
+  - Visual MIDI note preview within clips on the timeline
+- ✅ **Multi-Track Playback**:
+  - Real-time multi-track audio playback with sine wave synthesizer
+  - Dynamic track engine allocation (supports unlimited tracks)
+  - Per-track volume and pan control
+  - Mute and Solo functionality
+  - Independent zoom and scroll for MIDI editor and track editor
+- ✅ **Clip Management**:
+  - Right-click context menu for clips (Copy, Cut, Paste, Delete)
+  - Clip renaming with automatic file system synchronization
+  - Clip preview rendering showing individual MIDI notes
 
 **Usage**:
 ```bash
@@ -191,6 +208,9 @@ A file system tree component library for displaying directory structures in a tr
   - File and folder type distinction (📁/📄 icons)
   - Selection support for files and folders
   - Double-click events (handled by the application)
+  - Right-click context menu events (handled by the application)
+  - Drag and drop support for files (e.g., `.midiclip` files)
+  - Independent drag state tracking per file item
   - Parent directory navigation ("../" option)
   - Automatic sorting (folders first, then by name)
   - Error handling for inaccessible directories
@@ -555,8 +575,11 @@ The `egui_file_tree` library provides a file system tree component for displayin
 #### Interaction
 - ✅ Click to select files or folders
 - ✅ Double-click events (handled by the application)
+- ✅ Right-click context menu support (application handles menu display)
+- ✅ Drag and drop support for files (e.g., `.midiclip` files to track editor)
 - ✅ Visual selection feedback
 - ✅ Hover cursor indication
+- ✅ Independent drag state tracking per file item
 
 #### Error Handling
 - ✅ Graceful handling of inaccessible directories
@@ -584,6 +607,14 @@ for event in events {
         FileTreeEvent::PathDoubleClicked { path } => {
             println!("Double clicked: {:?}", path);
             // Handle file opening here
+        }
+        FileTreeEvent::PathRightClicked { path, pos } => {
+            println!("Right clicked: {:?} at {:?}", path, pos);
+            // Show context menu at position
+        }
+        FileTreeEvent::PathDragStarted { path } => {
+            println!("Drag started: {:?}", path);
+            // Handle drag operation (e.g., drag to track editor)
         }
         FileTreeEvent::NavigateToParent => {
             // Navigate to parent directory
@@ -628,6 +659,12 @@ pub enum FileTreeEvent {
     
     /// A path was double-clicked
     PathDoubleClicked { path: PathBuf },
+    
+    /// A path was right-clicked
+    PathRightClicked { path: PathBuf, pos: Pos2 },
+    
+    /// A path drag operation started
+    PathDragStarted { path: PathBuf },
     
     /// Navigate to parent directory (clicked "../")
     NavigateToParent,
@@ -796,11 +833,25 @@ The `egui_track_example` application demonstrates the track editor library with 
 ## 🎉 Recent Updates
 
 ### Latest Improvements
-- **Integrated DAW Example**: New `midi_track_file_example` application demonstrating unified integration of MIDI editor, track editor, and file tree components
-  - Resizable splitter controls for flexible interface layout
-  - Multi-tab MIDI editor supporting multiple open files
-  - File tree integration with double-click to open MIDI files
-  - Tabbed interface for track editor and additional tools
+- **Integrated DAW Example**: Enhanced `midi_track_file_example` application with complete MIDI clip workflow
+  - `.midiclip` file format support for single-track MIDI clips
+  - Drag and drop from file tree to track editor
+  - Automatic preview synchronization when clips are edited
+  - Visual MIDI note preview within clips
+  - Multi-track playback with dynamic track engine allocation
+  - Independent zoom/scroll for MIDI editor and track editor
+  - Clip context menu (Copy, Cut, Paste, Delete)
+  - Project file format changed to `.tracks` extension
+- **File Tree Enhancements**:
+  - Fixed drag-and-drop detection logic to correctly identify dragged files
+  - Right-click context menu support:
+    - Convert `.mid` files to `.midiclip` format
+    - Create new MIDI clips in folders
+    - Edit and delete `.midiclip` files
+- **Playback Engine Fixes**:
+  - Fixed first note playback issue (notes at position 0 now play correctly)
+  - Improved clip scheduling logic to handle overlapping time windows
+  - Enhanced event processing for accurate multi-track playback
 - **Swing Rhythm Enhancement**: Moved to right-click context menu with real-time adjustment (0-200% range, supports custom input)
 - **Interactive Loop Editing**: Shift + Left-drag on timeline to edit loop boundaries with grid snapping
 - **Timeline Interactions**: Left-drag for playhead positioning, Shift + Left-drag for loop editing (both support grid snapping, Alt to disable)

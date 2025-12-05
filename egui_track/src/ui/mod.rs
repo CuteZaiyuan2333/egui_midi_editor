@@ -82,6 +82,10 @@ pub struct TrackEditor {
     track_context_menu_pos: Option<Pos2>,  // 轨道右键菜单位置
     track_context_menu_open_pos: Option<Pos2>,  // 轨道右键菜单打开时的位置
     track_context_menu_track_id: Option<TrackId>,  // 显示右键菜单的轨道ID
+    clip_context_menu_pos: Option<Pos2>,  // 剪辑右键菜单位置
+    clip_context_menu_open_pos: Option<Pos2>,  // 剪辑右键菜单打开时的位置
+    clip_context_menu_clip_id: Option<ClipId>,  // 显示右键菜单的剪辑ID
+    clipboard: Vec<Clip>,  // 剪贴板：存储复制的剪辑
     selection_box_start: Option<Pos2>,
     selection_box_end: Option<Pos2>,
     is_panning: bool,
@@ -144,6 +148,10 @@ impl TrackEditor {
             track_context_menu_pos: None,
             track_context_menu_open_pos: None,
             track_context_menu_track_id: None,
+            clip_context_menu_pos: None,
+            clip_context_menu_open_pos: None,
+            clip_context_menu_clip_id: None,
+            clipboard: Vec::new(),
             selection_box_start: None,
             selection_box_end: None,
             is_panning: false,
@@ -338,6 +346,24 @@ impl TrackEditor {
                     track.monitor = monitor;
                     self.emit_event(TrackEditorEvent::TrackMonitorChanged { track_id, monitor });
                 }
+            }
+            TrackEditorCommand::CopyClips { clip_ids } => {
+                self.copy_clips(clip_ids);
+            }
+            TrackEditorCommand::CutClips { clip_ids } => {
+                self.cut_clips(clip_ids);
+            }
+            TrackEditorCommand::PasteClips { track_id, start_time } => {
+                self.paste_clips(track_id, start_time);
+            }
+            TrackEditorCommand::UpdateClipPreview { clip_id, preview_notes } => {
+                self.update_clip_preview(clip_id, preview_notes);
+            }
+            TrackEditorCommand::UpdateClipMidiFilePath { clip_id, new_file_path } => {
+                self.update_clip_midi_file_path(clip_id, new_file_path);
+            }
+            TrackEditorCommand::DeleteClips { clip_ids } => {
+                self.delete_clips(clip_ids);
             }
         }
     }
@@ -601,11 +627,30 @@ impl TrackEditor {
                 
                 // 绘制剪辑
                 for (clip_id, clip_rect, track_index) in &visible_clips {
+                    // 查找剪辑数据
+                    let clip_data = if let Some(track) = self.tracks.get(*track_index) {
+                        track.clips.iter().find(|c| c.id == *clip_id)
+                    } else {
+                        None
+                    };
+                    
+                    if clip_data.is_none() {
+                        continue;
+                    }
+                    let clip = clip_data.unwrap();
+                    
                     let is_selected = self.selected_clips.contains(clip_id);
                     let color = if is_selected {
                         Color32::from_rgb(150, 250, 150)
                     } else {
                         Color32::from_rgb(100, 200, 100)
+                    };
+                    
+                    // 计算标题栏高度
+                    let title_bar_height = if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
+                        CLIP_TITLE_BAR_HEIGHT
+                    } else {
+                        0.0
                     };
                     
                     // 绘制剪辑主体
@@ -618,10 +663,10 @@ impl TrackEditor {
                     );
                     
                     // 绘制标题栏（如果剪辑足够高）
-                    if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
+                    if title_bar_height > 0.0 {
                         let title_bar_rect = Rect::from_min_max(
                             Pos2::new(clip_rect.min.x, clip_rect.min.y),
-                            Pos2::new(clip_rect.max.x, clip_rect.min.y + CLIP_TITLE_BAR_HEIGHT),
+                            Pos2::new(clip_rect.max.x, clip_rect.min.y + title_bar_height),
                         );
                         
                         // 标题栏背景（更深的颜色，方便显示文字）
@@ -640,9 +685,6 @@ impl TrackEditor {
                             Stroke::new(1.0, Color32::from_gray(100)),
                         );
                         
-                        // 查找剪辑以获取名称
-                        if let Some(track) = self.tracks.get(*track_index) {
-                            if let Some(clip) = track.clips.iter().find(|c| c.id == *clip_id) {
                                 // 绘制剪辑名称
                                 let text_pos = title_bar_rect.left_center() + Vec2::new(4.0, 0.0);
                                 painter.text(
@@ -651,7 +693,87 @@ impl TrackEditor {
                                     &clip.name,
                                     FontId::proportional(11.0),
                                     Color32::WHITE,
+                        );
+                        
+                        // 如果有 MIDI 数据，显示音符数量
+                        if let ClipType::Midi { midi_data: Some(midi_data) } = &clip.clip_type {
+                            if !midi_data.preview_notes.is_empty() {
+                                let note_count_text = format!("{} notes", midi_data.preview_notes.len());
+                                let note_count_pos = title_bar_rect.right_center() - Vec2::new(4.0, 0.0);
+                                painter.text(
+                                    note_count_pos,
+                                    Align2::RIGHT_CENTER,
+                                    &note_count_text,
+                                    FontId::proportional(9.0),
+                                    Color32::from_gray(200),
                                 );
+                            }
+                        }
+                    }
+                    
+                    // 绘制 MIDI 预览音符（如果有）
+                    if let ClipType::Midi { midi_data: Some(midi_data) } = &clip.clip_type {
+                        if !midi_data.preview_notes.is_empty() {
+                            // 计算内容区域（剪辑主体减去标题栏）
+                            let content_rect = Rect::from_min_max(
+                                Pos2::new(clip_rect.min.x, clip_rect.min.y + title_bar_height),
+                                Pos2::new(clip_rect.max.x, clip_rect.max.y),
+                            );
+                            
+                            // 计算时间到像素的转换
+                            let clip_duration = clip.duration as f32;
+                            let content_width = content_rect.width();
+                            let time_to_x = |time: f64| -> f32 {
+                                if clip_duration > 0.0 {
+                                    (time as f32 / clip_duration) * content_width
+                                } else {
+                                    0.0
+                                }
+                            };
+                            
+                            // 计算 MIDI key 到垂直位置的转换
+                            // MIDI key 范围是 0-127，映射到内容区域的高度
+                            let key_to_y = |key: u8| -> f32 {
+                                // 反转：高音在上，低音在下
+                                let normalized = 1.0 - (key as f32 / 127.0);
+                                content_rect.min.y + normalized * content_rect.height()
+                            };
+                            
+                            // 渲染预览音符
+                            for preview_note in &midi_data.preview_notes {
+                                // 计算音符位置和大小
+                                let note_x = content_rect.min.x + time_to_x(preview_note.start);
+                                let note_y = key_to_y(preview_note.key);
+                                let note_width = time_to_x(preview_note.duration).max(2.0); // 最小宽度 2 像素
+                                let note_height = (content_rect.height() / 128.0).max(1.0); // 每个键的高度
+                                
+                                // 计算音符矩形
+                                let note_rect = Rect::from_min_size(
+                                    Pos2::new(note_x, note_y - note_height / 2.0),
+                                    Vec2::new(note_width, note_height),
+                                );
+                                
+                                // 只渲染在内容区域内的音符
+                                if note_rect.intersects(content_rect) {
+                                    // 根据力度设置颜色透明度
+                                    let velocity_alpha = (preview_note.velocity as f32 / 127.0 * 0.7 + 0.3).min(1.0);
+                                    let note_color = Color32::from_rgba_unmultiplied(
+                                        255,
+                                        200,
+                                        100,
+                                        (255.0 * velocity_alpha) as u8,
+                                    );
+                                    
+                                    // 绘制音符矩形
+                                    painter.rect_filled(note_rect, 0.0, note_color);
+                                    
+                                    // 绘制音符边框
+                                    painter.rect_stroke(
+                                        note_rect,
+                                        0.0,
+                                        Stroke::new(0.5, Color32::from_rgb(200, 150, 50)),
+                                    );
+                                }
                             }
                         }
                     }
@@ -680,6 +802,18 @@ impl TrackEditor {
 
                 // 处理剪辑点击和拖拽
                 for (clip_id, clip_rect, track_index) in &visible_clips {
+                    // 查找剪辑数据
+                    let clip_data = if let Some(track) = self.tracks.get(*track_index) {
+                        track.clips.iter().find(|c| c.id == *clip_id)
+                    } else {
+                        None
+                    };
+                    
+                    if clip_data.is_none() {
+                        continue;
+                    }
+                    let clip = clip_data.unwrap();
+                    
                     // 计算标题栏区域
                     let title_bar_rect = if clip_rect.height() > CLIP_TITLE_BAR_HEIGHT + CLIP_TITLE_BAR_MIN_HEIGHT {
                         Some(Rect::from_min_max(
@@ -695,15 +829,10 @@ impl TrackEditor {
                             // 检查是否点击了标题栏
                             if let Some(title_rect) = title_bar_rect {
                                 if title_rect.contains(pointer) {
-                                    // 双击标题栏开始编辑
+                                    // 双击标题栏开始编辑名称
                                     if response.double_clicked() {
-                                        // 获取当前剪辑名称并初始化编辑状态
-                                        if let Some(track) = self.tracks.get(*track_index) {
-                                            if let Some(clip) = track.clips.iter().find(|c| c.id == *clip_id) {
                                                 self.editing_clip_name = Some(*clip_id);
                                                 self.editing_clip_name_value = Some(clip.name.clone());
-                                            }
-                                        }
                                     }
                                     pointer_consumed = true;
                                 } else if clip_rect.contains(pointer) {
@@ -714,6 +843,40 @@ impl TrackEditor {
                             } else if clip_rect.contains(pointer) {
                                 let modifiers = ui.input(|i| i.modifiers);
                                 self.handle_clip_click(*clip_id, modifiers, clip::ClipHitRegion::Body);
+                                pointer_consumed = true;
+                            }
+                        }
+                    }
+                    
+                    // 处理双击剪辑（打开编辑器）
+                    if response.double_clicked() {
+                        if let Some(pointer) = response.interact_pointer_pos() {
+                            if clip_rect.contains(pointer) {
+                                // 检查是否双击在标题栏（如果是，不触发打开编辑器）
+                                let in_title_bar = if let Some(title_rect) = title_bar_rect {
+                                    title_rect.contains(pointer)
+                                } else {
+                                    false
+                                };
+                                
+                                if !in_title_bar {
+                                    // 触发双击剪辑事件
+                                    self.emit_event(TrackEditorEvent::ClipDoubleClicked {
+                                        clip_id: *clip_id,
+                                    });
+                                    pointer_consumed = true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 处理右键点击剪辑（显示上下文菜单）
+                    if response.clicked_by(PointerButton::Secondary) {
+                        if let Some(pointer) = response.interact_pointer_pos() {
+                            if clip_rect.contains(pointer) {
+                                self.clip_context_menu_pos = Some(pointer);
+                                self.clip_context_menu_open_pos = Some(pointer);
+                                self.clip_context_menu_clip_id = Some(*clip_id);
                                 pointer_consumed = true;
                             }
                         }
@@ -1400,6 +1563,124 @@ impl TrackEditor {
                         }
                     }
                 }
+                
+                // 显示剪辑右键菜单
+                if let Some(menu_pos) = self.clip_context_menu_pos {
+                    if let Some(menu_clip_id) = self.clip_context_menu_clip_id {
+                        // 找到右键点击的剪辑所在的轨道索引
+                        let menu_track_index = self.tracks.iter()
+                            .position(|track| track.clips.iter().any(|c| c.id == menu_clip_id));
+                        
+                        let menu_response = egui::Area::new(egui::Id::new("clip_context_menu"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(menu_pos)
+                            .show(ui.ctx(), |ui| {
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(150.0);
+                                    
+                                    let has_selection = !self.selected_clips.is_empty();
+                                    
+                                    // 复制
+                                    if ui.add_enabled(has_selection, egui::Button::new("Copy")
+                                        .min_size(egui::Vec2::new(150.0, 0.0))).clicked() {
+                                        let selected_clip_ids: Vec<ClipId> = self.selected_clips.iter().copied().collect();
+                                        pending_commands.borrow_mut().push(TrackEditorCommand::CopyClips {
+                                            clip_ids: selected_clip_ids,
+                                        });
+                                        self.clip_context_menu_pos = None;
+                                        self.clip_context_menu_open_pos = None;
+                                        self.clip_context_menu_clip_id = None;
+                                    }
+                                    
+                                    // 剪切
+                                    if ui.add_enabled(has_selection, egui::Button::new("Cut")
+                                        .min_size(egui::Vec2::new(150.0, 0.0))).clicked() {
+                                        let selected_clip_ids: Vec<ClipId> = self.selected_clips.iter().copied().collect();
+                                        pending_commands.borrow_mut().push(TrackEditorCommand::CutClips {
+                                            clip_ids: selected_clip_ids,
+                                        });
+                                        self.clip_context_menu_pos = None;
+                                        self.clip_context_menu_open_pos = None;
+                                        self.clip_context_menu_clip_id = None;
+                                    }
+                                    
+                                    // 粘贴
+                                    if ui.add_enabled(!self.clipboard.is_empty(), egui::Button::new("Paste")
+                                        .min_size(egui::Vec2::new(150.0, 0.0))).clicked() {
+                                        // 获取当前播放头位置作为粘贴位置
+                                        let paste_time = self.timeline.playhead_position;
+                                        // 尝试找到右键点击的轨道
+                                        let paste_track_id = if let Some(track_index) = menu_track_index {
+                                            if let Some(track) = self.tracks.get(track_index) {
+                                                track.id
+                                            } else if let Some(first_track) = self.tracks.first() {
+                                                first_track.id
+                                            } else {
+                                                // 如果没有轨道，创建一个
+                                                self.create_track("Track 1".to_string());
+                                                self.tracks.first().map(|t| t.id).unwrap_or_else(|| {
+                                                    TrackId::next()
+                                                })
+                                            }
+                                        } else if let Some(first_track) = self.tracks.first() {
+                                            first_track.id
+                                        } else {
+                                            // 如果没有轨道，创建一个
+                                            self.create_track("Track 1".to_string());
+                                            self.tracks.first().map(|t| t.id).unwrap_or_else(|| {
+                                                TrackId::next()
+                                            })
+                                        };
+                                        
+                                        pending_commands.borrow_mut().push(TrackEditorCommand::PasteClips {
+                                            track_id: paste_track_id,
+                                            start_time: paste_time,
+                                        });
+                                        self.clip_context_menu_pos = None;
+                                        self.clip_context_menu_open_pos = None;
+                                        self.clip_context_menu_clip_id = None;
+                                    }
+                                    
+                                    ui.separator();
+                                    
+                                    // 删除
+                                    if ui.add_enabled(has_selection, egui::Button::new("Delete")
+                                        .min_size(egui::Vec2::new(150.0, 0.0))).clicked() {
+                                        let selected_clip_ids: Vec<ClipId> = self.selected_clips.iter().copied().collect();
+                                        pending_commands.borrow_mut().push(TrackEditorCommand::DeleteClips {
+                                            clip_ids: selected_clip_ids,
+                                        });
+                                        self.clip_context_menu_pos = None;
+                                        self.clip_context_menu_open_pos = None;
+                                        self.clip_context_menu_clip_id = None;
+                                    }
+                                });
+                            });
+                        
+                        // 关闭菜单逻辑
+                        let ctx = ui.ctx();
+                        if ctx.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
+                            if let Some(click_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                                let menu_rect = menu_response.response.rect;
+                                let ignore_click = if let Some(open_pos) = self.clip_context_menu_open_pos {
+                                    click_pos.distance(open_pos) < TRACK_CONTEXT_MENU_THRESHOLD
+                                } else {
+                                    false
+                                };
+                                
+                                if !ignore_click && !menu_rect.contains(click_pos) {
+                                    self.clip_context_menu_pos = None;
+                                    self.clip_context_menu_open_pos = None;
+                                    self.clip_context_menu_clip_id = None;
+                                }
+                            } else {
+                                self.clip_context_menu_pos = None;
+                                self.clip_context_menu_open_pos = None;
+                                self.clip_context_menu_clip_id = None;
+                            }
+                        }
+                    }
+                }
 
                 // Add "New Track" button (below the last track)
                 let add_track_button_height = 30.0;
@@ -1570,13 +1851,51 @@ impl TrackEditor {
         if let Some(track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
             // 限制：不允许将剪辑创建到小于 0 的位置
             let clamped_start = start.max(0.0);
-            let name = match &clip_type {
-                ClipType::Midi { .. } => "MIDI Clip".to_string(),
-                ClipType::Audio { .. } => "Audio Clip".to_string(),
+            let (name, color) = match &clip_type {
+                ClipType::Midi { midi_data } => {
+                    let name = if let Some(midi_data) = midi_data {
+                        if let Some(ref file_path) = midi_data.midi_file_path {
+                            // 从文件路径提取文件名（不含扩展名）
+                            std::path::Path::new(file_path)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("MIDI Clip")
+                                .to_string()
+                        } else {
+                            "MIDI Clip".to_string()
+                        }
+                    } else {
+                        "MIDI Clip".to_string()
+                    };
+                    (name, Color32::from_rgb(100, 200, 100))
+                }
+                ClipType::Audio { audio_data } => {
+                    let name = if let Some(audio_data) = audio_data {
+                        if let Some(ref file_path) = audio_data.audio_file_path {
+                            std::path::Path::new(file_path)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Audio Clip")
+                                .to_string()
+                        } else {
+                            "Audio Clip".to_string()
+                        }
+                    } else {
+                        "Audio Clip".to_string()
+                    };
+                    (name, Color32::from_rgb(150, 150, 250))
+                }
             };
-            let clip = match clip_type {
-                ClipType::Midi { .. } => Clip::new_midi(track_id, clamped_start, duration, name),
-                ClipType::Audio { .. } => Clip::new_audio(track_id, clamped_start, duration, name),
+            
+            // 直接使用传入的 clip_type 创建剪辑
+            let clip = Clip {
+                id: ClipId::next(),
+                track_id,
+                start_time: clamped_start,
+                duration,
+                clip_type,
+                name,
+                color,
             };
             track.clips.push(clip);
         }
@@ -1705,6 +2024,103 @@ impl TrackEditor {
             track.name = new_name;
         }
     }
+    
+    /// 复制选中的剪辑到剪贴板
+    fn copy_clips(&mut self, clip_ids: Vec<ClipId>) {
+        self.clipboard.clear();
+        
+        for track in &self.tracks {
+            for clip in &track.clips {
+                if clip_ids.contains(&clip.id) {
+                    self.clipboard.push(clip.clone());
+                }
+            }
+        }
+    }
+    
+    /// 剪切选中的剪辑到剪贴板（复制后删除）
+    fn cut_clips(&mut self, clip_ids: Vec<ClipId>) {
+        // 先复制
+        self.copy_clips(clip_ids.clone());
+        
+        // 然后删除
+        self.delete_clips(clip_ids);
+    }
+    
+    /// 从剪贴板粘贴剪辑
+    fn paste_clips(&mut self, track_id: TrackId, start_time: f64) {
+        if self.clipboard.is_empty() {
+            return;
+        }
+        
+        // 找到最早的剪辑开始时间，用于计算偏移
+        let earliest_start = self.clipboard.iter()
+            .map(|c| c.start_time)
+            .fold(f64::INFINITY, f64::min);
+        
+        // 找到目标轨道
+        if let Some(target_track) = self.tracks.iter_mut().find(|t| t.id == track_id) {
+            for clip in &self.clipboard {
+                // 计算新的开始时间（保持相对位置）
+                let time_offset = clip.start_time - earliest_start;
+                let new_start = start_time + time_offset;
+                
+                // 创建新剪辑（使用新的 ID）
+                let mut new_clip = clip.clone();
+                new_clip.id = ClipId::next();
+                new_clip.track_id = track_id;
+                new_clip.start_time = new_start.max(0.0);
+                
+                target_track.clips.push(new_clip);
+            }
+        }
+    }
+    
+    /// 更新剪辑预览
+    fn update_clip_preview(&mut self, clip_id: ClipId, preview_notes: Vec<crate::structure::PreviewNote>) {
+        // 找到剪辑并更新预览数据
+        for track in &mut self.tracks {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
+                if let ClipType::Midi { midi_data: Some(midi_data) } = &mut clip.clip_type {
+                    midi_data.preview_notes = preview_notes;
+                }
+                break;
+            }
+        }
+    }
+    
+    /// 更新剪辑的 MIDI 文件路径
+    fn update_clip_midi_file_path(&mut self, clip_id: ClipId, new_file_path: String) {
+        // 找到剪辑并更新文件路径
+        for track in &mut self.tracks {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
+                if let ClipType::Midi { midi_data: Some(midi_data) } = &mut clip.clip_type {
+                    midi_data.midi_file_path = Some(new_file_path);
+                }
+                break;
+            }
+        }
+    }
+    
+    /// 删除多个剪辑
+    
+    fn delete_clips(&mut self, clip_ids: Vec<ClipId>) {
+        for track in &mut self.tracks {
+            track.clips.retain(|clip| !clip_ids.contains(&clip.id));
+        }
+        
+        // 从选中集合中移除已删除的剪辑
+        for clip_id in &clip_ids {
+            self.selected_clips.remove(clip_id);
+        }
+        
+        // 发出删除事件
+        for clip_id in &clip_ids {
+            self.emit_event(TrackEditorEvent::ClipDeleted {
+                clip_id: *clip_id,
+            });
+        }
+    }
 
     fn emit_event(&mut self, event: TrackEditorEvent) {
         if let Some(ref mut listener) = self.event_listener {
@@ -1740,5 +2156,51 @@ impl TrackEditor {
     /// 选中剪辑 ID 的有序集合
     pub fn selected_clips(&self) -> &BTreeSet<ClipId> {
         &self.selected_clips
+    }
+    
+    /// 构建剪辑的工具提示文本
+    #[allow(dead_code)]
+    fn build_clip_tooltip(&self, clip: &Clip) -> String {
+        let mut lines = Vec::new();
+        
+        lines.push(format!("Name: {}", clip.name));
+        lines.push(format!("Duration: {:.2}s", clip.duration));
+        lines.push(format!("Start: {:.2}s", clip.start_time));
+        
+        match &clip.clip_type {
+            ClipType::Midi { midi_data } => {
+                if let Some(midi_data) = midi_data {
+                    lines.push("Type: MIDI Clip".to_string());
+                    
+                    if let Some(ref file_path) = midi_data.midi_file_path {
+                        lines.push(format!("File: {}", file_path));
+                    }
+                    
+                    if !midi_data.preview_notes.is_empty() {
+                        lines.push(format!("Notes: {}", midi_data.preview_notes.len()));
+                        
+                        // 计算音高范围
+                        let keys: Vec<u8> = midi_data.preview_notes.iter().map(|n| n.key).collect();
+                        if let (Some(&min_key), Some(&max_key)) = (keys.iter().min(), keys.iter().max()) {
+                            lines.push(format!("Key range: {} - {}", min_key, max_key));
+                        }
+                    } else {
+                        lines.push("Notes: 0".to_string());
+                    }
+                } else {
+                    lines.push("Type: MIDI Clip (no data)".to_string());
+                }
+            }
+            ClipType::Audio { audio_data } => {
+                lines.push("Type: Audio Clip".to_string());
+                if let Some(audio_data) = audio_data {
+                    if let Some(ref file_path) = audio_data.audio_file_path {
+                        lines.push(format!("File: {}", file_path));
+                    }
+                }
+            }
+        }
+        
+        lines.join("\n")
     }
 }
