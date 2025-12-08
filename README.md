@@ -1,4 +1,4 @@
-# egui MIDI Editor
+# egui MIDI Editor（警惕！AI生产的不稳定大奋，使用前必须人工检查代码！）
 
 A project centered around MIDI editor with multiple utility libraries and examples. Built with Rust and egui framework, providing a focused and performant MIDI editing experience along with useful tools for DAW (Digital Audio Workstation) software development.
 
