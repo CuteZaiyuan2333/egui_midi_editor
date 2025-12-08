@@ -893,9 +893,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📊 Project Status
 
 **Version**: v0.1.0 (Beta)  
-**Status**: Active development  
+**Status**: Maintenance Mode  
 **License**: MIT  
 **Language**: Rust  
+
+**Note**: 我力竭了，实在无法维护，以后更新随缘
 
 ---
 
