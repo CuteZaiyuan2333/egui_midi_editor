@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use eframe::egui;
 use egui_dock::{
-    DockArea, DockState, NodeIndex, Tree, dock_area, dock_state
+    DockArea,
+    DockState,
+    NodeIndex,
 };
+use egui_midi::{audio::{AudioEngine, PlaybackBackend}, ui::MidiEditor};
 use crate::ctrpnl::tab::{self, MyTabViewer};
 
 pub struct Ctrpnl{
@@ -15,9 +20,12 @@ pub struct Ctrpnl{
             0.8,
             vec![tab::Mytab::PianoRoll],
         );
+        let audio: Arc<dyn PlaybackBackend> = Arc::new(AudioEngine::new());
         Ctrpnl{
             dock_state,
-            viewer: MyTabViewer,
+            viewer: MyTabViewer{
+                debugmidi: MidiEditor::new(Some(audio))
+            },
         }
     }
 }

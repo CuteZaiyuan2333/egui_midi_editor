@@ -1,5 +1,14 @@
 use eframe::egui;
 use egui_dock::TabViewer;
+use egui_midi::{
+    audio::{
+        AudioEngine,
+        PlaybackBackend
+    },
+    structure::MidiState,
+    ui::MidiEditor,
+};
+use midly::Smf;
 
 pub enum Mytab{
     Track,
@@ -9,7 +18,9 @@ pub enum Mytab{
     BlueprintEditor,
 }
 
-pub struct MyTabViewer;impl TabViewer for MyTabViewer {
+pub struct MyTabViewer{
+    pub debugmidi: MidiEditor
+}impl TabViewer for MyTabViewer {
     type Tab = Mytab;
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
         match tab{
@@ -26,7 +37,8 @@ pub struct MyTabViewer;impl TabViewer for MyTabViewer {
                 ui.label("place-holder(track editor)");
             }
             Mytab::PianoRoll => {
-                ui.label("place-holder(piano roll)");
+                //ui.label("place-holder(piano roll)");
+                self.debugmidi.ui(ui);
             }
             Mytab::SampleRoll => {
                 ui.label("place-holder(sample roll)");

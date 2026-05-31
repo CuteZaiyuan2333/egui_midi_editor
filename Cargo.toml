@@ -7,3 +7,7 @@ edition = "2024"
 chrono = "0.4.44"
 eframe = "0.34.3"
 egui_dock = "0.19.1"
+egui_midi = {
+    path = "egui_midi_ai_debugonly"
+}
+midly = "0.5.3"
